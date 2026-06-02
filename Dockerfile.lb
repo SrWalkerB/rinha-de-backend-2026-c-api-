@@ -1,0 +1,13 @@
+# Tiny round-robin TCP load balancer.
+FROM debian:stable-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY src/lb/lb.c .
+RUN gcc -O3 -std=c11 -Wall -Wextra -o /lb lb.c
+
+FROM debian:stable-slim AS run
+COPY --from=build /lb /app/lb
+EXPOSE 9999
+ENTRYPOINT ["/app/lb"]
+CMD ["9999", "api1", "8001", "api2", "8001"]

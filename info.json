@@ -1,0 +1,7 @@
+{
+  "participants": ["<YOUR_NAME>"],
+  "social": ["https://github.com/<YOUR_GITHUB_USER>"],
+  "source-code-repo": "https://github.com/<YOUR_GITHUB_USER>/rinha-backend-2026-c",
+  "stack": ["c", "epoll", "avx2", "custom-load-balancer"],
+  "open_to_work": false
+}

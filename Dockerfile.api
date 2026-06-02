@@ -1,0 +1,18 @@
+# Multi-stage: compile + run `prepare` to bake packed.bin, ship api + packed.bin.
+# Build for the test host (amd64/Haswell): docker build --platform linux/amd64 ...
+FROM debian:stable-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc make zlib1g-dev libc6-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY Makefile .
+COPY src ./src
+# references.json.gz must be present in the build context at resources/
+COPY resources/references.json.gz /refs/references.json.gz
+RUN make prepare api && ./prepare /refs/references.json.gz /packed.bin
+
+FROM debian:stable-slim AS run
+COPY --from=build /src/api        /app/api
+COPY --from=build /packed.bin     /app/packed.bin
+EXPOSE 8001
+ENTRYPOINT ["/app/api"]
+CMD ["/app/packed.bin", "8001"]

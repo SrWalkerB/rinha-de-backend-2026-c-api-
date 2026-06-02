@@ -1,0 +1,10 @@
+.git
+prepare
+api
+lb
+verify
+packed.bin
+*.o
+run-local.ps1
+run-local.sh
+docs

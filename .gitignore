@@ -1,0 +1,52 @@
+# Built artifacts
+/prepare
+/api
+/lb
+/verify
+packed.bin
+
+# C build output
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.gch
+*.pch
+*.d
+
+# Debug / profiling
+*.dSYM/
+*.su
+*.gcno
+*.gcda
+*.gcov
+perf.data
+perf.data.old
+core
+vgcore.*
+
+# Staged dataset (48MB; copied from ../rinha-de-backend-2026/resources at build time)
+/resources/references.json.gz
+
+# Bench / test output
+/bench/results/
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.clangd/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

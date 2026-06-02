@@ -1,0 +1,44 @@
+# Local/dev compose — builds images and runs lb + 2 api instances on a bridge net.
+# Total limits: 1.0 CPU, 324MB (cap is 1.0 / 350MB).
+# For submission, see docker-compose.submission.yml (public images, no build).
+services:
+  api1:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: rinha-api-c:local
+    command: ["/app/packed.bin", "8001"]
+    networks: [app]
+    deploy:
+      resources:
+        limits: { cpus: "0.45", memory: "160M" }
+
+  api2:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: rinha-api-c:local
+    command: ["/app/packed.bin", "8001"]
+    networks: [app]
+    depends_on: [api1]
+    deploy:
+      resources:
+        limits: { cpus: "0.45", memory: "160M" }
+
+  lb:
+    build:
+      context: .
+      dockerfile: Dockerfile.lb
+    image: rinha-lb-c:local
+    command: ["9999", "api1", "8001", "api2", "8001"]
+    ports:
+      - "9999:9999"
+    networks: [app]
+    depends_on: [api1, api2]
+    deploy:
+      resources:
+        limits: { cpus: "0.10", memory: "24M" }
+
+networks:
+  app:
+    driver: bridge
