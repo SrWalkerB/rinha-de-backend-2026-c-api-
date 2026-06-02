@@ -3,6 +3,7 @@
 /api
 /lb
 /verify
+/bench
 packed.bin
 
 # C build output
