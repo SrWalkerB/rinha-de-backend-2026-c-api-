@@ -4,7 +4,7 @@
 # Total limits: 1.0 CPU, 324MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:latest
+    image: docker.io/srwalkerb/rinha-api-c:v1
     command: ["/app/packed.bin", "8001"]
     networks: [app]
     deploy:
@@ -12,7 +12,7 @@ services:
         limits: { cpus: "0.45", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:latest
+    image: docker.io/srwalkerb/rinha-api-c:v1
     command: ["/app/packed.bin", "8001"]
     networks: [app]
     deploy:
@@ -20,7 +20,7 @@ services:
         limits: { cpus: "0.45", memory: "160M" }
 
   lb:
-    image: docker.io/srwalkerb/rinha-lb-c:latest
+    image: docker.io/srwalkerb/rinha-lb-c:v1
     command: ["9999", "api1", "8001", "api2", "8001"]
     ports:
       - "9999:9999"
