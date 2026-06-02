@@ -1,0 +1,7 @@
+# Override applied by run-loadtest.sh. The load test runs INSIDE the compose
+# network (k6 -> http://lb:9999), so the LB's host port publish is unnecessary
+# and would clash with any other stack already bound to 9999. Drop it so the
+# load test is fully self-contained and never fights for a host port.
+services:
+  lb:
+    ports: !reset []
