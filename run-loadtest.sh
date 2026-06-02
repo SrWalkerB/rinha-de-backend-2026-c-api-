@@ -85,22 +85,40 @@ echo ">> ready."
 SRC="test.js"; [ "$SMOKE" = 1 ] && SRC="smoke.js"
 echo ">> running k6 (in-network -> http://lb:9999, script loadtest/$SRC) ..."
 rm -f "$ROOT/loadtest/results.json"
-docker run --rm --network "$NET" \
+# --user 0:0: the k6 image runs as uid 12345 by default, but the bind-mounted
+# /work is host-owned (root:root 755) on native Linux, so the non-root k6 user
+# cannot write results.json ("permission denied"). On Docker Desktop the mount is
+# world-writable so it slipped by; run k6 as root to write the summary everywhere.
+# `|| true`: a handleSummary write failure makes k6 exit non-zero, which under
+# `set -e` would abort before the HEALTH report — keep going so we always diagnose.
+docker run --rm --network "$NET" --user 0:0 \
   -e K6_NO_USAGE_REPORT=true -e TARGET=http://lb:9999 \
-  -v "$ROOT:/work" -w /work grafana/k6:latest run "loadtest/$SRC"
+  -v "$ROOT:/work" -w /work grafana/k6:latest run "loadtest/$SRC" || true
 
 # ── report ──────────────────────────────────────────────────────────────────
 echo; echo "===== RESULTS ====="
 if [ -f "$ROOT/loadtest/results.json" ]; then cat "$ROOT/loadtest/results.json"; else echo "(smoke run, or no results.json produced)"; fi
 
-echo; echo "===== HEALTH (mlock / OOM) ====="
+echo; echo "===== HEALTH (mlock / OOM / faults) ====="
 for svc in api1 api2; do
   cid="$("${DC[@]}" ps -q "$svc" || true)"
-  [ -n "$cid" ] || continue
+  [ -n "$cid" ] || { echo "$svc: NOT RUNNING"; continue; }
   vmlck="$(docker exec "$cid" grep VmLck /proc/1/status 2>/dev/null | tr -d '\n' || echo 'VmLck: ?')"
+  # field 12 of /proc/1/stat = major faults since start. High = index getting
+  # evicted and re-read from disk under load (the p99-collapse signature).
+  majflt="$(docker exec "$cid" awk '{print $12}' /proc/1/stat 2>/dev/null || echo '?')"
   oom="$(docker inspect -f '{{.State.OOMKilled}}' "$cid")"
   mlk="$(docker logs "$cid" 2>&1 | grep -i mlock | tail -1 || true)"
-  echo "$svc: ${vmlck:-VmLck: ?} | OOMKilled=$oom | ${mlk:-no mlock log}"
+  echo "$svc: ${vmlck:-VmLck: ?} | majflt=$majflt | OOMKilled=$oom | ${mlk:-NO mlock log}"
 done
+echo; echo "-- nproc seen by api1 (CPU available) / host --"
+a1="$("${DC[@]}" ps -q api1 || true)"
+[ -n "$a1" ] && docker exec "$a1" nproc 2>/dev/null || true
+echo "host nproc: $(nproc 2>/dev/null || echo '?')  |  load: $(cat /proc/loadavg 2>/dev/null || echo '?')"
+
+if [ ! -f "$ROOT/loadtest/results.json" ] && [ "$SMOKE" != 1 ]; then
+  echo; echo "===== api1 startup log (mlock line + any WARN) ====="
+  [ -n "$a1" ] && docker logs "$a1" 2>&1 | head -20 || true
+fi
 
 echo; echo "(stack left up; tear down with: $0 --down)"
