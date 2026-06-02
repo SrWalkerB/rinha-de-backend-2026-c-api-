@@ -36,6 +36,7 @@ vgcore.*
 
 # Bench / test output
 /bench/results/
+/loadtest/results.json
 *.log
 
 # Editor / IDE
