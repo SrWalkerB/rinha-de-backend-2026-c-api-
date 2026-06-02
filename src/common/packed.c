@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <string.h>
 
 /* Layout helpers — MUST match prepare.c exactly. */
 static inline size_t align64(size_t x) { return (x + 63) & ~(size_t)63; }
@@ -16,7 +18,7 @@ size_t packed_vecs16_off(uint32_t nrefs){
     return align64(packed_vecs8_off() + (size_t)nrefs * VDIM8 * sizeof(int8_t) + 64);
 }
 size_t packed_orig_off(uint32_t nrefs)  {
-    return packed_vecs16_off(nrefs) + (size_t)nrefs * VLANES * sizeof(int16_t);
+    return packed_vecs16_off(nrefs) + (size_t)nrefs * VDIM8 * sizeof(int16_t);
 }
 size_t packed_fraud_off(uint32_t nrefs) {
     return packed_orig_off(nrefs) + (size_t)nrefs * sizeof(uint32_t);
@@ -33,7 +35,7 @@ int ds_open(Dataset *ds, const char *path) {
     if (fstat(fd, &st) < 0) { perror("fstat"); close(fd); return -1; }
     size_t len = (size_t)st.st_size;
 
-    void *base = mmap(NULL, len, PROT_READ, MAP_SHARED, fd, 0);
+    void *base = mmap(NULL, len, PROT_READ, MAP_SHARED | MAP_POPULATE, fd, 0);
     close(fd);
     if (base == MAP_FAILED) { perror("mmap"); return -1; }
 
@@ -54,8 +56,17 @@ int ds_open(Dataset *ds, const char *path) {
     ds->map_base = base;
     ds->map_len  = len;
 
-    /* Warm the page cache + advise kernel we'll touch it all. */
+    /* Warm the page cache + advise kernel we'll touch it all, then pin it
+       resident: the index is clean file-backed memory, so under a strict cgroup
+       it is the first thing the kernel reclaims under pressure — eviction storms
+       are what tank p99. mlock guarantees zero major faults after startup.
+       Log-and-continue: a failed lock must degrade to old behavior, never abort. */
     madvise(base, len, MADV_WILLNEED);
+    if (mlock(base, len) != 0)
+        fprintf(stderr, "WARN mlock(%zu) failed: %s — index NOT pinned\n",
+                len, strerror(errno));
+    else
+        fprintf(stderr, "mlocked %zu bytes (index pinned)\n", len);
     return 0;
 }
 

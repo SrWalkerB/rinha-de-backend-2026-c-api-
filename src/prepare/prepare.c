@@ -4,7 +4,7 @@
  * record with strtod, quantizes to int16 = round(v*10000) (lossless on the
  * round4 grid) and int8 = round(v*127) (coarse filter), groups records into 16
  * buckets (is_online, card_present, unknown_merchant, has_last), and writes:
- *   vecs8[bucket order] | vecs16 | orig[original index] | fraud bitset
+ *   vecs8[bucket order] | vecs16[11 variable dims] | orig[original index] | fraud bitset
  *
  * Usage: prepare <references.json.gz> <out packed.bin>
  */
@@ -108,16 +108,19 @@ int main(int argc, char **argv) {
     /* emit arrays in bucket-grouped order */
     static const int dmap8[VDIM8] = DMAP8_INIT;
     int8_t   *ov8 = calloc((size_t)n * VDIM8 + 64, 1);   /* +64: safe over-read */
-    int16_t  *ov16 = malloc((size_t)n * VLANES * sizeof(int16_t));
+    int16_t  *ov16 = malloc((size_t)n * VDIM8 * sizeof(int16_t));
     uint32_t *os  = malloc((size_t)n * sizeof(uint32_t));
     uint8_t  *of  = calloc((n + 7) / 8, 1);
     if (!ov8 || !ov16 || !os || !of) { fprintf(stderr, "oom\n"); return 1; }
     for (size_t pos = 0; pos < n; pos++) {
         uint32_t src = ord[pos];
         const int16_t *v = qv + (size_t)src * VLANES;
-        memcpy(ov16 + pos * VLANES, v, VLANES * sizeof(int16_t));
+        int16_t *d16 = ov16 + pos * VDIM8;
         int8_t *d8 = ov8 + pos * VDIM8;
-        for (int k = 0; k < VDIM8; k++) d8[k] = q16_to_q8(v[dmap8[k]]);
+        for (int k = 0; k < VDIM8; k++) {
+            d16[k] = v[dmap8[k]];
+            d8[k] = q16_to_q8(v[dmap8[k]]);
+        }
         os[pos] = src;
         if (frd[src]) of[pos >> 3] |= (uint8_t)(1u << (pos & 7));
     }
@@ -137,7 +140,7 @@ int main(int argc, char **argv) {
     fwrite(ov8, sizeof(int8_t), (size_t)n * VDIM8, f); pos += (size_t)n * VDIM8;
     /* gap (incl. +64 over-read margin + 64B align) up to vecs16 */
     while (pos < packed_vecs16_off((uint32_t)n)) { size_t c = packed_vecs16_off((uint32_t)n) - pos; if (c > 64) c = 64; fwrite(pad, 1, c, f); pos += c; }
-    fwrite(ov16, sizeof(int16_t), (size_t)n * VLANES, f);
+    fwrite(ov16, sizeof(int16_t), (size_t)n * VDIM8, f);
     fwrite(os, sizeof(uint32_t), n, f);
     fwrite(of, 1, (n + 7) / 8, f);
     fclose(f);

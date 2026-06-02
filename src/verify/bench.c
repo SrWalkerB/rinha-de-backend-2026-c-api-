@@ -70,5 +70,6 @@ int main(int argc, char **argv) {
         if (bc[b])
             printf("  bucket %2d: size=%-8u queries=%-6ld %.1f us/query\n",
                    b, bo[b+1]-bo[b], bc[b], bt[b]/bc[b]*1e6);
+    if (sink == 42) puts("unreachable");
     return 0;
 }
