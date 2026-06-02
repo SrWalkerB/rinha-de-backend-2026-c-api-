@@ -1,12 +1,10 @@
-# Local/dev compose — builds images and runs lb + 2 api instances on a bridge net.
-# Total limits: 1.0 CPU, 324MB (cap is 1.0 / 350MB).
-# For submission, see docker-compose.submission.yml (public images, no build).
+# SUBMISSION compose — goes to the `submission` branch as docker-compose.yml.
+# Uses PUBLIC prebuilt images (packed.bin is baked into the api image at build).
+# Replace srwalkerb with your registry namespace before pushing.
+# Total limits: 1.0 CPU, 324MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    image: rinha-api-c:local
+    image: docker.io/srwalkerb/rinha-api-c:latest
     command: ["/app/packed.bin", "8001"]
     networks: [app]
     deploy:
@@ -14,22 +12,15 @@ services:
         limits: { cpus: "0.45", memory: "160M" }
 
   api2:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    image: rinha-api-c:local
+    image: docker.io/srwalkerb/rinha-api-c:latest
     command: ["/app/packed.bin", "8001"]
     networks: [app]
-    depends_on: [api1]
     deploy:
       resources:
         limits: { cpus: "0.45", memory: "160M" }
 
   lb:
-    build:
-      context: .
-      dockerfile: Dockerfile.lb
-    image: rinha-lb-c:local
+    image: docker.io/srwalkerb/rinha-lb-c:latest
     command: ["9999", "api1", "8001", "api2", "8001"]
     ports:
       - "9999:9999"
