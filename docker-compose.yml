@@ -9,6 +9,9 @@ services:
     image: rinha-api-c:local
     command: ["/app/packed.bin", "8001"]
     networks: [app]
+    cap_add: [IPC_LOCK]
+    ulimits:
+      memlock: -1
     deploy:
       resources:
         limits: { cpus: "0.45", memory: "160M" }
@@ -20,6 +23,9 @@ services:
     image: rinha-api-c:local
     command: ["/app/packed.bin", "8001"]
     networks: [app]
+    cap_add: [IPC_LOCK]
+    ulimits:
+      memlock: -1
     depends_on: [api1]
     deploy:
       resources:

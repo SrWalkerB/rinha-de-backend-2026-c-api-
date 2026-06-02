@@ -47,11 +47,12 @@ static inline int32_t dist8(const int8_t *q, const int8_t *r) {
 #endif
 }
 
-/* exact squared distance in int16 space */
-static inline int64_t dist16(const int16_t *q, const int16_t *r) {
+/* exact squared distance over the variable in-bucket dimensions in int16 space */
+static inline int64_t dist16v(const int16_t *q, const int16_t *r) {
 #if defined(__AVX2__)
     __m256i a = _mm256_loadu_si256((const __m256i *)q);
-    __m256i b = _mm256_loadu_si256((const __m256i *)r);
+    __m256i b = _mm256_and_si256(_mm256_loadu_si256((const __m256i *)r),
+                                 _mm256_setr_epi16(-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0));
     __m256i d = _mm256_sub_epi16(a, b);
     __m256i m = _mm256_madd_epi16(d, d);
     __m128i lo = _mm256_castsi256_si128(m), hi = _mm256_extracti128_si256(m, 1);
@@ -62,7 +63,7 @@ static inline int64_t dist16(const int16_t *q, const int16_t *r) {
     return (int64_t)_mm_extract_epi64(sum, 0) + (int64_t)_mm_extract_epi64(sum, 1);
 #else
     int64_t s = 0;
-    for (int k = 0; k < VLANES; k++) { int32_t e = (int32_t)q[k] - r[k]; s += (int64_t)e * e; }
+    for (int k = 0; k < VDIM8; k++) { int32_t e = (int32_t)q[k] - r[k]; s += (int64_t)e * e; }
     return s;
 #endif
 }
@@ -78,8 +79,11 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
 
     static const int dmap8[VDIM8] = DMAP8_INIT;
     int8_t q8[VLANES];
+    int16_t qv[VLANES];
     for (int k = 0; k < VDIM8; k++) q8[k] = q16_to_q8(q16[dmap8[k]]);
     for (int k = VDIM8; k < VLANES; k++) q8[k] = 0;
+    for (int k = 0; k < VDIM8; k++) qv[k] = q16[dmap8[k]];
+    for (int k = VDIM8; k < VLANES; k++) qv[k] = 0;
 
     /* ── pass 1: int8 shortlist of KNN_CAND nearest (unsorted, max-tracked) ── */
     uint32_t n = hi - lo;
@@ -112,7 +116,7 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
     const int16_t *b16 = ds->vecs16;
     for (int c = 0; c < filled; c++) {
         uint32_t idx = ci[c];
-        int64_t  d   = dist16(q16, b16 + (size_t)idx * VLANES);
+        int64_t  d   = dist16v(qv, b16 + (size_t)idx * VDIM8);
         uint32_t oi  = ds->orig[idx];
         if (d > bd[KNN_K-1] || (d == bd[KNN_K-1] && oi >= bo[KNN_K-1])) continue;
         int j = KNN_K - 1;
@@ -132,16 +136,28 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
 int knn_fraud_count_full(const Dataset *ds, const int16_t q16[VLANES]) {
     int64_t  bd[KNN_K]; uint32_t bo[KNN_K]; uint32_t bi[KNN_K];
     for (int j = 0; j < KNN_K; j++) { bd[j] = INT64_MAX; bo[j] = UINT32_MAX; bi[j] = 0; }
+    static const int dmap8[VDIM8] = DMAP8_INIT;
+    int16_t qv[VLANES];
+    for (int k = 0; k < VDIM8; k++) qv[k] = q16[dmap8[k]];
+    for (int k = VDIM8; k < VLANES; k++) qv[k] = 0;
+    int qbits = (q16[9] == SCALE) | ((q16[10] == SCALE) << 1) | ((q16[11] == SCALE) << 2);
     const int16_t *b16 = ds->vecs16;
-    for (uint32_t i = 0; i < ds->nrefs; i++) {
-        int64_t  d  = dist16(q16, b16 + (size_t)i * VLANES);
-        uint32_t oi = ds->orig[i];
-        if (d > bd[KNN_K-1] || (d == bd[KNN_K-1] && oi >= bo[KNN_K-1])) continue;
-        int j = KNN_K - 1;
-        while (j > 0 && (d < bd[j-1] || (d == bd[j-1] && oi < bo[j-1]))) {
-            bd[j] = bd[j-1]; bo[j] = bo[j-1]; bi[j] = bi[j-1]; j--;
+    for (int bucket = 0; bucket < NBUCKETS; bucket++) {
+        int bbits = bucket & 7;
+        int diff = qbits ^ bbits;
+        int64_t const_d = 0;
+        for (int bit = 0; bit < 3; bit++)
+            if (diff & (1 << bit)) const_d += (int64_t)SCALE * SCALE;
+        for (uint32_t i = ds->hdr->bucket_off[bucket]; i < ds->hdr->bucket_off[bucket + 1]; i++) {
+            int64_t  d  = const_d + dist16v(qv, b16 + (size_t)i * VDIM8);
+            uint32_t oi = ds->orig[i];
+            if (d > bd[KNN_K-1] || (d == bd[KNN_K-1] && oi >= bo[KNN_K-1])) continue;
+            int j = KNN_K - 1;
+            while (j > 0 && (d < bd[j-1] || (d == bd[j-1] && oi < bo[j-1]))) {
+                bd[j] = bd[j-1]; bo[j] = bo[j-1]; bi[j] = bi[j-1]; j--;
+            }
+            bd[j] = d; bo[j] = oi; bi[j] = i;
         }
-        bd[j] = d; bo[j] = oi; bi[j] = i;
     }
     int frauds = 0;
     for (int j = 0; j < KNN_K; j++)

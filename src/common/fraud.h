@@ -56,7 +56,7 @@ typedef struct {
 
 /* ── packed.bin on-disk layout (little-endian, AoS) ───────────────────────── */
 #define PACKED_MAGIC   0x52484E41u  /* "ANHR" little-endian of 'RNHA'         */
-#define PACKED_VERSION 5u
+#define PACKED_VERSION 6u
 
 typedef struct {
     uint32_t magic;
@@ -68,7 +68,7 @@ typedef struct {
     uint32_t bucket_off[NBUCKETS+1];/* prefix sums (bucket-grouped, orig order)*/
     /* followed by (vecs start 64B-aligned):                                   */
     /*   int8_t   vecs8[nrefs * VDIM8]   (AoS, 11-dim coarse filter, grouped)   */
-    /*   int16_t  vecs16[nrefs * VLANES] (AoS, exact re-rank, full 14 dims)     */
+    /*   int16_t  vecs16[nrefs * VDIM8]  (AoS, exact re-rank, 11 variable dims) */
     /*   uint32_t orig[nrefs]            (original reference index, for ties)   */
     /*   uint8_t  fraud[(nrefs+7)/8]     (1=fraud, same order)                  */
 } PackedHeader;
@@ -77,7 +77,7 @@ typedef struct {
 typedef struct {
     const PackedHeader *hdr;
     const int8_t       *vecs8;   /* nrefs * VLANES, coarse first pass          */
-    const int16_t      *vecs16;  /* nrefs * VLANES, exact re-rank             */
+    const int16_t      *vecs16;  /* nrefs * VDIM8, exact re-rank              */
     const uint32_t     *orig;    /* nrefs, original index (tie-break)          */
     const uint8_t      *fraud;   /* bitset                                    */
     uint32_t            nrefs;
