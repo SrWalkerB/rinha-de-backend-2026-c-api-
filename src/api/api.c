@@ -30,6 +30,7 @@
 #define RESP_MAX 160     /* upper bound on one response's size */
 
 static Dataset g_ds;
+static int g_nprobe = NPROBE_DEFAULT;
 
 /* Precomputed full HTTP responses, indexed by fraud_count 0..5. */
 static char  g_resp[6][WBUF];
@@ -57,12 +58,22 @@ static void build_responses(void) {
 
 /* ── connection state ─────────────────────────────────────────────────────── */
 typedef struct {
-    int    fd;
-    int    rlen;
-    int    wlen, woff;
-    char   rbuf[RBUF];
-    char   wbuf[WBUF];
+    int      fd;
+    int      rlen;
+    int      wlen, woff;
+    uint32_t want;          /* currently-armed epoll events (avoid redundant MOD) */
+    char     rbuf[RBUF];
+    char     wbuf[WBUF];
 } Conn;
+
+#include <stdint.h>
+static int g_ep;
+static inline void want_events(Conn *c, uint32_t ev) {
+    if (c->want == ev) return;                 /* no syscall when unchanged */
+    c->want = ev;
+    struct epoll_event e = { .events = ev, .data.fd = c->fd };
+    epoll_ctl(g_ep, EPOLL_CTL_MOD, c->fd, &e);
+}
 
 static Conn *conns[1 << 16];   /* fd -> Conn */
 
@@ -91,7 +102,7 @@ static void handle_one(Conn *c, const char *req, const char *body) {
     if (body && req_parse(body, &r) == 0) {
         int16_t q[VLANES];
         int key = vec_build(&r, q);
-        fn = knn_fraud_count(&g_ds, q, key);
+        fn = knn_fraud_count(&g_ds, q, key, g_nprobe);
     }
     memcpy(c->wbuf + c->wlen, g_resp[fn], g_resp_len[fn]);
     c->wlen += g_resp_len[fn];
@@ -99,19 +110,18 @@ static void handle_one(Conn *c, const char *req, const char *body) {
 
 /* Try to flush c->wbuf. Returns 0 ok (maybe partial), -1 on fatal error. */
 static int flush_w(int ep, Conn *c) {
+    (void)ep;
     while (c->woff < c->wlen) {
         ssize_t n = write(c->fd, c->wbuf + c->woff, c->wlen - c->woff);
         if (n > 0) { c->woff += (int)n; continue; }
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT, .data.fd = c->fd };
-            epoll_ctl(ep, EPOLL_CTL_MOD, c->fd, &ev);
+            want_events(c, EPOLLIN | EPOLLOUT | EPOLLET);
             return 0;
         }
         return -1;
     }
     c->woff = c->wlen = 0;
-    struct epoll_event ev = { .events = EPOLLIN, .data.fd = c->fd };
-    epoll_ctl(ep, EPOLL_CTL_MOD, c->fd, &ev);
+    want_events(c, EPOLLIN | EPOLLET);   /* no-op when already armed (the hot path) */
     return 0;
 }
 
@@ -176,7 +186,7 @@ static void warm_dataset(void) {
     for (size_t i = 0; i < g_ds.map_len; i += 4096) sink += base[i];
     /* warm the hot code path with a dummy query per bucket */
     int16_t q[VLANES]; memset(q, 0, sizeof(q));
-    for (int b = 0; b < NBUCKETS; b++) sink += knn_fraud_count(&g_ds, q, b);
+    for (int b = 0; b < NBUCKETS; b++) sink += knn_fraud_count(&g_ds, q, b, g_nprobe);
     (void)sink;
 }
 
@@ -185,6 +195,8 @@ int main(int argc, char **argv) {
     int port = atoi(argv[2]);
 
     if (ds_open(&g_ds, argv[1]) != 0) return 1;
+    { const char *np = getenv("NPROBE"); if (np && *np) g_nprobe = atoi(np); }
+    fprintf(stderr, "nprobe=%d\n", g_nprobe);
     build_responses();
     warm_dataset();
 
@@ -197,6 +209,7 @@ int main(int argc, char **argv) {
     if (listen(lfd, 1024) < 0) { perror("listen"); return 1; }
 
     int ep = epoll_create1(0);
+    g_ep = ep;
     struct epoll_event ev = { .events = EPOLLIN, .data.fd = lfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
 
@@ -215,8 +228,9 @@ int main(int argc, char **argv) {
                     setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
                     Conn *c = calloc(1, sizeof(Conn));
                     c->fd = cfd;
+                    c->want = EPOLLIN | EPOLLET;
                     conns[cfd] = c;
-                    struct epoll_event ce = { .events = EPOLLIN, .data.fd = cfd };
+                    struct epoll_event ce = { .events = EPOLLIN | EPOLLET, .data.fd = cfd };
                     epoll_ctl(ep, EPOLL_CTL_ADD, cfd, &ce);
                 }
                 continue;

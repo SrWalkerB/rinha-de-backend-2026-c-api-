@@ -1,0 +1,21 @@
+# Load balancer image with TWO strategies and automatic fallback:
+#   1) kernel L4 round-robin (iptables DNAT + conntrack) — forwarding runs in
+#      softirq, costing ~no cgroup CPU. Used when NET_ADMIN is available.
+#   2) userspace epoll round-robin relay (/app/lb) — used if iptables can't be
+#      programmed (e.g. NET_ADMIN denied). Always works, never inspects payload.
+FROM debian:stable-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY src/lb/lb.c .
+RUN gcc -O3 -std=c11 -Wall -Wextra -o /lb lb.c
+
+FROM debian:stable-slim AS run
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        iptables iproute2 && rm -rf /var/lib/apt/lists/*
+COPY --from=build /lb /app/lb
+COPY lb-nft.sh /app/lb-nft.sh
+RUN chmod +x /app/lb-nft.sh
+EXPOSE 9999
+ENTRYPOINT ["/app/lb-nft.sh"]
+CMD ["9999", "api1", "8001", "api2", "8001"]

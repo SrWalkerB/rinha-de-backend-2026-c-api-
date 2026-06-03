@@ -7,42 +7,51 @@
  *                                lower original index wins ties
  *   - decision       approved = (frauds/5) < 0.6   (strict)
  *
- * We represent every dimension as int16 q = lround(value*10000). All reference
- * values are on the k/10000 grid (round4), so this is lossless and integer
+ * int16 q = lround(value*10000) is lossless on the round4 grid, so integer
  * squared distance reproduces the double ordering exactly. Sentinel -1 -> -10000.
- */
+ *
+ * v12: per-bucket IVF (k-means inverted file). Each of the 16 binary buckets is
+ * partitioned offline into clusters; points are stored grouped by (bucket,
+ * cluster). At query time we score the bucket's cluster centroids, probe the
+ * NPROBE nearest, and run the int8 vpmaddwd coarse scan + int16 exact re-rank
+ * only over those clusters' points. This turns the full per-bucket brute force
+ * (up to 1M points / >1ms) into a few-thousand-candidate scan (~tens of us),
+ * which is what lets the server keep up with the arrival rate and collapse p99.
+ * NPROBE is tuned so the probed clusters contain the true 5-NN for every test
+ * query (verify.c proves 0 detection disagreement vs the exact labels). */
 #ifndef FRAUD_H
 #define FRAUD_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-#define VDIM      14        /* real dimensions                                */
-#define VLANES    16        /* int16 padded to 16 lanes (one AVX2 load/ref)    */
-#define VDIM8     11        /* int8 filter stores only the 11 non-constant dims*/
-/* dims 9,10,11 (is_online, card_present, unknown_merchant) are CONSTANT within
- * every bucket (they ARE the bucket key) → contribute 0 to in-bucket distance →
- * dropped from the int8 first pass. Kept (in this lane order): the DMAP8 set.   */
+#define VDIM      14
+#define VLANES    16
+#define VDIM8     11        /* stored variable dims (the DMAP8 set)            */
+#define VPAD      12        /* padded to even for dim-pairing (dim 11 = 0)     */
+#define GPAIRS    6         /* VPAD/2 dim-pairs                                 */
 #define DMAP8_INIT { 0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13 }
 #define KNN_K     5
-#define NBUCKETS  16        /* key = is_online|card_present<<1|unknown<<2|has_last<<3 */
-#define SCALE     10000     /* int16 fixed-point scale (lossless on round4)    */
-#define SCALE8    127       /* int8 fixed-point scale (coarse filter)          */
-#define SENTINEL  (-10000)  /* dims 5,6 when last_transaction == null (int16)  */
-#define SENTINEL8 (-127)    /* sentinel in int8 space                          */
+#define NBUCKETS  16
+#define SCALE     10000
+#define SCALE8    127
+#define SENTINEL  (-10000)
 #define KNN_CAND  64        /* int8 first-pass candidates re-ranked exactly    */
 
-/* fraud_score >= 0.6  => denied. 3 of 5 neighbors fraud = 0.6 exactly.       */
-#define FRAUD_DENY_COUNT 3  /* frauds needed to deny (score>=0.6)             */
+#define FRAUD_DENY_COUNT 3
 
-/* ── parsed request (only the fields the vector needs) ────────────────────── */
+/* IVF build/query parameters. */
+#define TARGET_CLUSTER 600  /* aim for ~this many points per k-means cluster   */
+#define KMEANS_ITERS   12   /* Lloyd iterations at build time                  */
+#define NPROBE_DEFAULT 32   /* clusters probed per query (runtime overridable)  */
+#define NPROBE_MAX     512
+
 typedef struct {
     double  amount;
     int     installments;
-    char    requested_at[32];   /* ISO-8601 "YYYY-MM-DDThh:mm:ssZ"            */
+    char    requested_at[32];
     double  cust_avg;
     int     tx_count_24h;
-    /* unknown_merchant: 1 if merchant.id NOT in known_merchants              */
     int     unknown_merchant;
     char    mcc[8];
     double  merch_avg;
@@ -54,53 +63,53 @@ typedef struct {
     double  last_km;
 } Request;
 
-/* ── packed.bin on-disk layout (little-endian, AoS) ───────────────────────── */
-#define PACKED_MAGIC   0x52484E41u  /* "ANHR" little-endian of 'RNHA'         */
-#define PACKED_VERSION 6u
+#define PACKED_MAGIC   0x52484E41u
+#define PACKED_VERSION 12u
 
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    uint32_t vdim;                  /* 14                                      */
-    uint32_t vlanes;                /* 16                                      */
-    uint32_t nrefs;                 /* total reference vectors                 */
-    uint32_t nbuckets;              /* 16                                      */
-    uint32_t bucket_off[NBUCKETS+1];/* prefix sums (bucket-grouped, orig order)*/
-    /* followed by (vecs start 64B-aligned):                                   */
-    /*   int8_t   vecs8[nrefs * VDIM8]   (AoS, 11-dim coarse filter, grouped)   */
-    /*   int16_t  vecs16[nrefs * VDIM8]  (AoS, exact re-rank, 11 variable dims) */
-    /*   uint32_t orig[nrefs]            (original reference index, for ties)   */
-    /*   uint8_t  fraud[(nrefs+7)/8]     (1=fraud, same order)                  */
+    uint32_t vdim;
+    uint32_t vlanes;
+    uint32_t nrefs;
+    uint32_t nbuckets;
+    uint32_t nclust;                    /* total clusters across all buckets       */
+    uint32_t clust_bucket_off[NBUCKETS+1]; /* cluster-index range per bucket        */
+    uint32_t bucket_off[NBUCKETS+1];    /* point-index range per bucket            */
+    uint64_t clust_pt_off_off;          /* uint32 clust_pt_off[nclust+1] (pt index)*/
+    uint64_t centroids_off;             /* int16 centroids[nclust*VLANES] DMAP8 pad*/
+    uint64_t vecs16_off;   /* int16 vecs16[nrefs*VDIM8], point-major (re-rank)        */
+    uint64_t vecs8_off;    /* int8, per CLUSTER dim-PAIR-interleaved SoA (VPAD/point) */
+    uint64_t orig_off;     /* uint32 orig[nrefs]                                      */
+    uint64_t fraud_off;    /* uint8 fraud bitset                                      */
+    uint64_t total_len;
 } PackedHeader;
 
-/* ── mmap'd dataset handle ────────────────────────────────────────────────── */
 typedef struct {
     const PackedHeader *hdr;
-    const int8_t       *vecs8;   /* nrefs * VLANES, coarse first pass          */
-    const int16_t      *vecs16;  /* nrefs * VDIM8, exact re-rank              */
-    const uint32_t     *orig;    /* nrefs, original index (tie-break)          */
-    const uint8_t      *fraud;   /* bitset                                    */
+    const uint32_t     *clust_pt_off; /* clust_pt_off[nclust+1]                  */
+    const int16_t      *centroids;    /* nclust * VLANES, DMAP8-order padded     */
+    const int16_t      *vecs16;  /* point-major, exact re-rank                  */
+    const int8_t       *vecs8;   /* per-cluster pair-SoA: cluster base =
+                                    clust_pt_off[c]*VPAD; pair pp at +pp*2*cnt;
+                                    point i at +2*i                              */
+    const uint32_t     *orig;
+    const uint8_t      *fraud;
     uint32_t            nrefs;
     void               *map_base;
     size_t              map_len;
 } Dataset;
 
-/* mcc_risk table (baked constants from resources/mcc_risk.json) -------------- */
-double mcc_risk_lookup(const char *code);   /* default 0.5                     */
+double mcc_risk_lookup(const char *code);
 
-/* ── vectorization (bit-exact port of normalize()) ────────────────────────── */
-/* Fills q[VLANES] (lanes 14,15 = 0) and returns bucket key 0..15.            */
 int  vec_build(const Request *req, int16_t q[VLANES]);
 int  vec_bucket_key(const Request *req);
 
-/* ── dataset load / knn ───────────────────────────────────────────────────── */
-int  ds_open(Dataset *ds, const char *path);   /* 0 ok, -1 fail               */
+int  ds_open(Dataset *ds, const char *path);
 void ds_close(Dataset *ds);
 
-/* Returns frauds among the 5 nearest within the query's bucket.              */
-int  knn_fraud_count(const Dataset *ds, const int16_t q[VLANES], int bucket_key);
-
-/* Full brute force over ALL refs (verify only). bucket_key ignored.         */
+/* nprobe<=0 => probe every cluster in the bucket (exact within bucket). */
+int  knn_fraud_count(const Dataset *ds, const int16_t q[VLANES], int bucket_key, int nprobe);
 int  knn_fraud_count_full(const Dataset *ds, const int16_t q[VLANES]);
 
 #endif /* FRAUD_H */

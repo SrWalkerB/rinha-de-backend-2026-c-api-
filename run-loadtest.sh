@@ -28,7 +28,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE="$ROOT/docker-compose.yml"
+COMPOSE="${COMPOSE:-$ROOT/docker-compose.yml}"
 OVERRIDE="$ROOT/loadtest/compose.override.yml"
 RINHA="${RINHA:-$(cd "$ROOT/../rinha-de-backend-2026" 2>/dev/null && pwd || true)}"
 DC=(docker compose -f "$COMPOSE" -f "$OVERRIDE")

@@ -1,10 +1,13 @@
-/* prepare.c — build-time: references.json.gz -> packed.bin.
+/* prepare.c — build-time: references.json.gz -> packed.bin (v12, per-bucket IVF).
  *
- * Streams the gzip, scans each {"vector":[14 nums],"label":"fraud|legit"}
- * record with strtod, quantizes to int16 = round(v*10000) (lossless on the
- * round4 grid) and int8 = round(v*127) (coarse filter), groups records into 16
- * buckets (is_online, card_present, unknown_merchant, has_last), and writes:
- *   vecs8[bucket order] | vecs16[11 variable dims] | orig[original index] | fraud bitset
+ * Parse, quantize to int16 (lossless on the round4 grid), group into 16 binary
+ * buckets, then k-means each bucket into clusters of ~TARGET_CLUSTER points.
+ * Points are emitted grouped by (bucket, cluster):
+ *   centroids   int16[nclust*VLANES] DMAP8-order, padded (query-time probe)
+ *   clust_pt_off uint32[nclust+1]    point-index range of each cluster
+ *   vecs16      point-major int16 (exact re-rank)
+ *   vecs8       per-CLUSTER DIM-PAIR-interleaved int8 (SoA) for the vpmaddwd scan
+ *   orig        original index (tie-break)   |   fraud bitset
  *
  * Usage: prepare <references.json.gz> <out packed.bin>
  */
@@ -15,12 +18,9 @@
 #include <string.h>
 #include <math.h>
 #include <zlib.h>
-
-size_t packed_vecs8_off(void);
-size_t packed_vecs16_off(uint32_t nrefs);
-size_t packed_orig_off(uint32_t nrefs);
-size_t packed_fraud_off(uint32_t nrefs);
-size_t packed_total(uint32_t nrefs);
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 static inline int8_t q16_to_q8(int16_t v) {
     long r = lround((double)v * (double)SCALE8 / (double)SCALE);
@@ -50,6 +50,29 @@ static char *gunzip_all(const char *path, size_t *out_len) {
 static int bucket_of(const int16_t *q) {
     return (q[9] == SCALE) | ((q[10] == SCALE) << 1) | ((q[11] == SCALE) << 2) | ((q[5] != SENTINEL) << 3);
 }
+static size_t align_up(size_t x, size_t a){ return (x+a-1)&~(a-1); }
+
+/* squared distance over 16 int16 lanes (extra lanes are zero-padded). */
+static inline int64_t dist16(const int16_t *a, const int16_t *b) {
+#if defined(__AVX2__)
+    __m256i va = _mm256_loadu_si256((const __m256i *)a);
+    __m256i vb = _mm256_loadu_si256((const __m256i *)b);
+    __m256i d  = _mm256_sub_epi16(va, vb);
+    __m256i m  = _mm256_madd_epi16(d, d);
+    __m128i lo = _mm256_castsi256_si128(m), hi = _mm256_extracti128_si256(m, 1);
+    __m128i s  = _mm_add_epi32(lo, hi);
+    __m128i s0 = _mm_cvtepi32_epi64(s);
+    __m128i s1 = _mm_cvtepi32_epi64(_mm_srli_si128(s, 8));
+    __m128i sum= _mm_add_epi64(s0, s1);
+    return (int64_t)_mm_extract_epi64(sum,0)+(int64_t)_mm_extract_epi64(sum,1);
+#else
+    int64_t s=0; for(int k=0;k<VDIM8;k++){int32_t e=(int32_t)a[k]-b[k];s+=(int64_t)e*e;} return s;
+#endif
+}
+
+/* deterministic LCG */
+static uint64_t g_rng = 0x9E3779B97F4A7C15ull;
+static inline uint32_t rnd(void){ g_rng = g_rng*6364136223846793005ull + 1442695040888963407ull; return (uint32_t)(g_rng>>33); }
 
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: %s <refs.json.gz> <out.bin>\n", argv[0]); return 1; }
@@ -70,8 +93,7 @@ int main(int argc, char **argv) {
         if (n >= cap) {
             cap *= 2;
             qv  = realloc(qv,  cap * VLANES * sizeof(int16_t));
-            frd = realloc(frd, cap);
-            bk  = realloc(bk,  cap);
+            frd = realloc(frd, cap); bk = realloc(bk, cap);
             if (!qv || !frd || !bk) { fprintf(stderr, "oom\n"); return 1; }
         }
         int16_t *dst = qv + n * VLANES;
@@ -82,71 +104,180 @@ int main(int argc, char **argv) {
         }
         for (int k = VDIM; k < VLANES; k++) dst[k] = 0;
         char *lp = strstr(p, "\"label\""); if (!lp) break;
-        lp = strchr(lp, ':'); lp++;
-        while (*lp != '"') lp++;
-        lp++;
-        frd[n] = (lp[0] == 'f');
-        bk[n]  = (uint8_t)bucket_of(dst);
-        p = lp;
-        n++;
+        lp = strchr(lp, ':'); lp++; while (*lp != '"') lp++; lp++;
+        frd[n] = (lp[0] == 'f'); bk[n] = (uint8_t)bucket_of(dst); p = lp; n++;
     }
     free(buf);
     fprintf(stderr, "parsed %zu records\n", n);
 
+    static const int dmap8[VDIM8] = DMAP8_INIT;
     uint32_t counts[NBUCKETS] = {0};
     for (size_t i = 0; i < n; i++) counts[bk[i]]++;
     uint32_t off[NBUCKETS + 1]; off[0] = 0;
     for (int b = 0; b < NBUCKETS; b++) off[b + 1] = off[b] + counts[b];
 
-    /* stable bucket-group: ORD[pos] = original index */
+    /* point indices grouped by bucket */
     uint32_t *ord = malloc((size_t)n * sizeof(uint32_t));
-    uint32_t cur[NBUCKETS];
-    if (!ord) { fprintf(stderr, "oom\n"); return 1; }
-    for (int b = 0; b < NBUCKETS; b++) cur[b] = off[b];
-    for (size_t i = 0; i < n; i++) ord[cur[bk[i]]++] = (uint32_t)i;
+    if (!ord) { fprintf(stderr,"oom\n"); return 1; }
+    { uint32_t cur[NBUCKETS]; for (int b=0;b<NBUCKETS;b++) cur[b]=off[b];
+      for (size_t i=0;i<n;i++) ord[cur[bk[i]]++]=(uint32_t)i; }
+    free(bk);
 
-    /* emit arrays in bucket-grouped order */
-    static const int dmap8[VDIM8] = DMAP8_INIT;
-    int8_t   *ov8 = calloc((size_t)n * VDIM8 + 64, 1);   /* +64: safe over-read */
-    int16_t  *ov16 = malloc((size_t)n * VDIM8 * sizeof(int16_t));
-    uint32_t *os  = malloc((size_t)n * sizeof(uint32_t));
-    uint8_t  *of  = calloc((n + 7) / 8, 1);
-    if (!ov8 || !ov16 || !os || !of) { fprintf(stderr, "oom\n"); return 1; }
-    for (size_t pos = 0; pos < n; pos++) {
-        uint32_t src = ord[pos];
-        const int16_t *v = qv + (size_t)src * VLANES;
-        int16_t *d16 = ov16 + pos * VDIM8;
-        int8_t *d8 = ov8 + pos * VDIM8;
-        for (int k = 0; k < VDIM8; k++) {
-            d16[k] = v[dmap8[k]];
-            d8[k] = q16_to_q8(v[dmap8[k]]);
+    /* ── per-bucket k-means → cluster label for each point, plus centroids ── */
+    uint32_t clust_bucket_off[NBUCKETS+1]; clust_bucket_off[0]=0;
+    uint32_t *clabel = malloc((size_t)n*sizeof(uint32_t));   /* cluster idx within bucket */
+    int16_t  *all_cent = NULL; uint32_t cent_cap = 0, ncl_total = 0;
+    if (!clabel) { fprintf(stderr,"oom\n"); return 1; }
+
+    for (int b = 0; b < NBUCKETS; b++) {
+        uint32_t base = off[b], cnt = counts[b];
+        if (cnt == 0) { clust_bucket_off[b+1] = clust_bucket_off[b]; continue; }
+        uint32_t C = (cnt + TARGET_CLUSTER/2) / TARGET_CLUSTER;
+        if (C < 1) C = 1;
+        if (C > cnt) C = cnt;
+
+        /* padded int16 points for this bucket (DMAP8 order, lanes 11..15 = 0) */
+        int16_t *pts = calloc((size_t)cnt*VLANES, sizeof(int16_t));
+        int16_t *cent= calloc((size_t)C*VLANES, sizeof(int16_t));
+        uint32_t *asg = malloc((size_t)cnt*sizeof(uint32_t));
+        int64_t *sum  = malloc((size_t)C*VDIM8*sizeof(int64_t));
+        uint32_t *ccnt= malloc((size_t)C*sizeof(uint32_t));
+        if (!pts||!cent||!asg||!sum||!ccnt){ fprintf(stderr,"oom kmeans\n"); return 1; }
+        for (uint32_t i=0;i<cnt;i++){
+            const int16_t *v = qv + (size_t)ord[base+i]*VLANES;
+            int16_t *d = pts + (size_t)i*VLANES;
+            for (int k=0;k<VDIM8;k++) d[k]=v[dmap8[k]];
         }
-        os[pos] = src;
-        if (frd[src]) of[pos >> 3] |= (uint8_t)(1u << (pos & 7));
+        /* init: evenly strided points */
+        for (uint32_t j=0;j<C;j++){
+            uint32_t src = (uint32_t)(((uint64_t)j*cnt)/C);
+            memcpy(cent+(size_t)j*VLANES, pts+(size_t)src*VLANES, VLANES*sizeof(int16_t));
+        }
+        for (int it=0; it<KMEANS_ITERS; it++){
+            memset(sum,0,(size_t)C*VDIM8*sizeof(int64_t));
+            memset(ccnt,0,(size_t)C*sizeof(uint32_t));
+            for (uint32_t i=0;i<cnt;i++){
+                const int16_t *v = pts+(size_t)i*VLANES;
+                int64_t best=INT64_MAX; uint32_t bj=0;
+                for (uint32_t j=0;j<C;j++){
+                    int64_t d=dist16(v, cent+(size_t)j*VLANES);
+                    if (d<best){best=d;bj=j;}
+                }
+                asg[i]=bj; ccnt[bj]++;
+                int64_t *s=sum+(size_t)bj*VDIM8;
+                for (int k=0;k<VDIM8;k++) s[k]+=v[k];
+            }
+            for (uint32_t j=0;j<C;j++){
+                int16_t *cj = cent+(size_t)j*VLANES;
+                if (ccnt[j]==0){ /* reseed empty cluster to a random point */
+                    uint32_t src = rnd()%cnt;
+                    memcpy(cj, pts+(size_t)src*VLANES, VLANES*sizeof(int16_t));
+                    continue;
+                }
+                int64_t *s=sum+(size_t)j*VDIM8;
+                for (int k=0;k<VDIM8;k++) cj[k]=(int16_t)((s[k]>=0? s[k]+ccnt[j]/2 : s[k]-(int64_t)ccnt[j]/2)/ (int64_t)ccnt[j]);
+            }
+        }
+        /* final assignment */
+        for (uint32_t i=0;i<cnt;i++){
+            const int16_t *v = pts+(size_t)i*VLANES;
+            int64_t best=INT64_MAX; uint32_t bj=0;
+            for (uint32_t j=0;j<C;j++){ int64_t d=dist16(v, cent+(size_t)j*VLANES); if(d<best){best=d;bj=j;} }
+            clabel[base+i]=bj;
+        }
+        /* append centroids */
+        if (ncl_total + C > cent_cap){ cent_cap = (ncl_total+C)*2 + 16; all_cent = realloc(all_cent, (size_t)cent_cap*VLANES*sizeof(int16_t)); if(!all_cent){fprintf(stderr,"oom cent\n");return 1;} }
+        memcpy(all_cent + (size_t)ncl_total*VLANES, cent, (size_t)C*VLANES*sizeof(int16_t));
+        ncl_total += C;
+        clust_bucket_off[b+1] = ncl_total;
+
+        free(pts);free(cent);free(asg);free(sum);free(ccnt);
+        fprintf(stderr, "bucket %2d: %u pts -> %u clusters\n", b, cnt, C);
     }
-    free(qv); free(frd); free(bk); free(ord);
+    fprintf(stderr, "total clusters: %u\n", ncl_total);
+
+    /* ── reorder points by (bucket, cluster); build clust_pt_off ── */
+    /* cluster sizes */
+    uint32_t *clsize = calloc((size_t)ncl_total, sizeof(uint32_t));
+    if (!clsize){fprintf(stderr,"oom\n");return 1;}
+    for (int b=0;b<NBUCKETS;b++){
+        uint32_t base=off[b], cnt=counts[b], cb0=clust_bucket_off[b];
+        for (uint32_t i=0;i<cnt;i++) clsize[cb0 + clabel[base+i]]++;
+    }
+    uint32_t *clust_pt_off = malloc(((size_t)ncl_total+1)*sizeof(uint32_t));
+    clust_pt_off[0]=0;
+    for (uint32_t c=0;c<ncl_total;c++) clust_pt_off[c+1]=clust_pt_off[c]+clsize[c];
+
+    /* final point order: position of each (bucket point) in the (bucket,cluster) layout */
+    uint32_t *neworder = malloc((size_t)n*sizeof(uint32_t)); /* neworder[pos] = src index */
+    uint32_t *cwrite = malloc((size_t)ncl_total*sizeof(uint32_t));
+    for (uint32_t c=0;c<ncl_total;c++) cwrite[c]=clust_pt_off[c];
+    for (int b=0;b<NBUCKETS;b++){
+        uint32_t base=off[b], cnt=counts[b], cb0=clust_bucket_off[b];
+        for (uint32_t i=0;i<cnt;i++){
+            uint32_t c = cb0 + clabel[base+i];
+            neworder[cwrite[c]++] = ord[base+i];
+        }
+    }
+    free(ord); free(clabel); free(clsize); free(cwrite);
+
+    /* ── emit point arrays in new order ── */
+    int16_t  *ov16 = malloc((size_t)n*VDIM8*sizeof(int16_t));
+    int8_t   *ov8  = calloc((size_t)n*VPAD + 64, 1);   /* per-cluster pair-SoA, +64 over-read margin */
+    uint32_t *os   = malloc((size_t)n*sizeof(uint32_t));
+    uint8_t  *of   = calloc((n+7)/8, 1);
+    if (!ov16||!ov8||!os||!of){ fprintf(stderr, "oom emit\n"); return 1; }
+    for (uint32_t c=0;c<ncl_total;c++){
+        uint32_t cbase = clust_pt_off[c], ccnt = clust_pt_off[c+1]-clust_pt_off[c];
+        int8_t *soa = ov8 + (size_t)cbase * VPAD;       /* this cluster's pair-SoA block */
+        for (uint32_t i=0;i<ccnt;i++){
+            uint32_t pos = cbase + i, src = neworder[pos];
+            const int16_t *v = qv + (size_t)src*VLANES;
+            int16_t *d16 = ov16 + (size_t)pos*VDIM8;
+            for (int k=0;k<VDIM8;k++) d16[k]=v[dmap8[k]];
+            for (int pp=0; pp<GPAIRS; pp++){
+                int da=2*pp, db=2*pp+1;
+                int8_t va=(da<VDIM8)?q16_to_q8(v[dmap8[da]]):0;
+                int8_t vb=(db<VDIM8)?q16_to_q8(v[dmap8[db]]):0;
+                soa[(size_t)pp*2*ccnt + (size_t)i*2 + 0]=va;
+                soa[(size_t)pp*2*ccnt + (size_t)i*2 + 1]=vb;
+            }
+            os[pos]=src;
+            if (frd[src]) of[pos>>3] |= (uint8_t)(1u<<(pos&7));
+        }
+    }
+    free(qv); free(frd); free(neworder);
 
     PackedHeader h = {0};
-    h.magic = PACKED_MAGIC; h.version = PACKED_VERSION;
-    h.vdim = VDIM; h.vlanes = VLANES; h.nrefs = (uint32_t)n; h.nbuckets = NBUCKETS;
+    h.magic=PACKED_MAGIC; h.version=PACKED_VERSION; h.vdim=VDIM; h.vlanes=VLANES;
+    h.nrefs=(uint32_t)n; h.nbuckets=NBUCKETS; h.nclust=ncl_total;
     memcpy(h.bucket_off, off, sizeof(off));
+    memcpy(h.clust_bucket_off, clust_bucket_off, sizeof(clust_bucket_off));
 
-    FILE *f = fopen(argv[2], "wb");
-    if (!f) { perror("fopen out"); return 1; }
-    char pad[64] = {0};
-    size_t pos = 0;
-    fwrite(&h, sizeof(h), 1, f); pos += sizeof(h);
-    fwrite(pad, packed_vecs8_off() - pos, 1, f); pos = packed_vecs8_off();
-    fwrite(ov8, sizeof(int8_t), (size_t)n * VDIM8, f); pos += (size_t)n * VDIM8;
-    /* gap (incl. +64 over-read margin + 64B align) up to vecs16 */
-    while (pos < packed_vecs16_off((uint32_t)n)) { size_t c = packed_vecs16_off((uint32_t)n) - pos; if (c > 64) c = 64; fwrite(pad, 1, c, f); pos += c; }
-    fwrite(ov16, sizeof(int16_t), (size_t)n * VDIM8, f);
-    fwrite(os, sizeof(uint32_t), n, f);
-    fwrite(of, 1, (n + 7) / 8, f);
+    size_t pos = align_up(sizeof(PackedHeader), 64);
+    h.clust_pt_off_off = pos; pos += ((size_t)ncl_total+1)*sizeof(uint32_t);
+    pos = align_up(pos, 64);
+    h.centroids_off = pos; pos += (size_t)ncl_total*VLANES*sizeof(int16_t);
+    pos = align_up(pos, 64);
+    h.vecs16_off = pos; pos += (size_t)n*VDIM8*sizeof(int16_t);
+    h.vecs8_off  = pos; pos += (size_t)n*VPAD + 64;
+    h.orig_off   = pos; pos += (size_t)n*sizeof(uint32_t);
+    h.fraud_off  = pos; pos += (n+7)/8;
+    h.total_len  = pos;
+
+    FILE *f = fopen(argv[2], "wb"); if(!f){perror("fopen out");return 1;}
+    char pad[64]={0}; size_t at=0;
+    #define PAD_TO(t) do{ while(at<(t)){ size_t c=(t)-at; if(c>64)c=64; fwrite(pad,1,c,f); at+=c; } }while(0)
+    fwrite(&h,sizeof(h),1,f); at+=sizeof(h);
+    PAD_TO(h.clust_pt_off_off); fwrite(clust_pt_off,sizeof(uint32_t),(size_t)ncl_total+1,f); at+=((size_t)ncl_total+1)*sizeof(uint32_t);
+    PAD_TO(h.centroids_off);    fwrite(all_cent,sizeof(int16_t),(size_t)ncl_total*VLANES,f); at+=(size_t)ncl_total*VLANES*sizeof(int16_t);
+    PAD_TO(h.vecs16_off); fwrite(ov16,sizeof(int16_t),(size_t)n*VDIM8,f); at+=(size_t)n*VDIM8*sizeof(int16_t);
+    PAD_TO(h.vecs8_off);  fwrite(ov8,1,(size_t)n*VPAD+64,f); at+=(size_t)n*VPAD+64;
+    PAD_TO(h.orig_off);   fwrite(os,sizeof(uint32_t),n,f); at+=(size_t)n*sizeof(uint32_t);
+    PAD_TO(h.fraud_off);  fwrite(of,1,(n+7)/8,f); at+=(n+7)/8;
     fclose(f);
 
-    fprintf(stderr, "wrote %s  (%zu refs, %.1f MB)\n", argv[2], n, packed_total((uint32_t)n) / 1048576.0);
-    for (int b = 0; b < NBUCKETS; b++) fprintf(stderr, "  bucket %2d: %u\n", b, counts[b]);
-    free(ov8); free(ov16); free(os); free(of);
+    fprintf(stderr,"wrote %s  (%zu refs, %u clusters, %.1f MB)\n",argv[2],n,ncl_total,h.total_len/1048576.0);
+    free(ov16);free(ov8);free(os);free(of);free(clust_pt_off);free(all_cent);
     return 0;
 }

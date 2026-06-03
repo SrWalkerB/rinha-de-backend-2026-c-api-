@@ -21,7 +21,12 @@
 #include <sys/epoll.h>
 
 #define MAXEV 256
-#define BUF   65536
+/* Per connection we hold two relay buffers (c->b and b->c), so RAM scales as
+ * 2*BUF*concurrent_conns. The fraud request/response are tiny (~500B / ~80B), so
+ * a small buffer is plenty; 64KB here let ~250 keep-alive conns blow past the
+ * LB's 24MB cgroup and get it OOM-killed (exit 137) under load — which fails ALL
+ * traffic. 8KB keeps 2*8KB*~250 ≈ 4MB, with headroom for connection spikes. */
+#define BUF   8192
 #define NBK   2
 
 static struct sockaddr_in g_backend[NBK];

@@ -52,3 +52,20 @@ compile_commands.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local analysis tools (diagnostics, not part of submission)
+/analyze
+/mcand
+/probe
+src/verify/analyze.c
+src/verify/measure_cand.c
+src/verify/probe.c
+
+# Local iteration scaffolding (not part of submission)
+Dockerfile.dev
+Dockerfile.apifast
+docker-compose.fast.yml
+docker-compose.period.yml
+docker-compose.userspace.yml
+docker-compose.safetest.yml
+docker-compose.diag.yml

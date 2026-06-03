@@ -44,12 +44,13 @@ int main(int argc, char **argv) {
     fprintf(stderr, "queries=%d\n", n);
 
     /* warm */
+    int nprobe = NPROBE_DEFAULT; { const char *np=getenv("NPROBE"); if(np&&*np) nprobe=atoi(np);} fprintf(stderr,"nprobe=%d\n",nprobe);
     long sink = 0;
-    for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i]);
+    for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
 
     double t0 = now();
     for (int r = 0; r < loops; r++)
-        for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i]);
+        for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
     double dt = now() - t0;
 
     long total = (long)n * loops;
@@ -62,7 +63,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < n; i++) {
             int k = KEY[i];
             double a = now();
-            sink += knn_fraud_count(&ds, Q[i], k);
+            sink += knn_fraud_count(&ds, Q[i], k, nprobe);
             bt[k] += now() - a; bc[k]++;
         }
     uint32_t *bo = (uint32_t *)ds.hdr->bucket_off;

@@ -34,9 +34,12 @@ int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: %s <packed.bin> <test-data.json> [full_n]\n", argv[0]); return 2; }
     long full_n = (argc > 3) ? atol(argv[3]) : 2000;
 
+    int nprobe = NPROBE_DEFAULT;
+    { const char *np = getenv("NPROBE"); if (np && *np) nprobe = atoi(np); }
+
     Dataset ds;
     if (ds_open(&ds, argv[1]) != 0) return 2;
-    fprintf(stderr, "loaded %u refs\n", ds.nrefs);
+    fprintf(stderr, "loaded %u refs (nprobe=%d)\n", ds.nrefs, nprobe);
 
     size_t flen; char *buf = read_all(argv[2], &flen);
 
@@ -51,7 +54,7 @@ int main(int argc, char **argv) {
 
         int16_t q[VLANES];
         int key = vec_build(&req, q);
-        int fb  = knn_fraud_count(&ds, q, key);
+        int fb  = knn_fraud_count(&ds, q, key, nprobe);
         int approved = (fb < FRAUD_DENY_COUNT);
 
         int exp = read_bool_after(rq, "\"expected_approved\"");
