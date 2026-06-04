@@ -71,7 +71,7 @@ typedef struct {
 } Request;
 
 #define PACKED_MAGIC   0x52484E41u
-#define PACKED_VERSION 12u
+#define PACKED_VERSION 13u
 
 typedef struct {
     uint32_t magic;
@@ -83,8 +83,12 @@ typedef struct {
     uint32_t nclust;                    /* total clusters across all buckets       */
     uint32_t clust_bucket_off[NBUCKETS+1]; /* cluster-index range per bucket        */
     uint32_t bucket_off[NBUCKETS+1];    /* point-index range per bucket            */
+    uint32_t cent8_bucket_off[NBUCKETS+1]; /* int8 element offset of each bucket's
+                                              centroid pair-SoA block in cent8      */
     uint64_t clust_pt_off_off;          /* uint32 clust_pt_off[nclust+1] (pt index)*/
     uint64_t centroids_off;             /* int16 centroids[nclust*VLANES] DMAP8 pad*/
+    uint64_t cent8_off;    /* int8, per BUCKET dim-PAIR-interleaved SoA centroids
+                              (VPAD per centroid) — the batched probe scan          */
     uint64_t vecs16_off;   /* int16 vecs16[nrefs*VDIM8], point-major (re-rank)        */
     uint64_t vecs8_off;    /* int8, per CLUSTER dim-PAIR-interleaved SoA (VPAD/point) */
     uint64_t orig_off;     /* uint32 orig[nrefs]                                      */
@@ -96,6 +100,9 @@ typedef struct {
     const PackedHeader *hdr;
     const uint32_t     *clust_pt_off; /* clust_pt_off[nclust+1]                  */
     const int16_t      *centroids;    /* nclust * VLANES, DMAP8-order padded     */
+    const int8_t       *cent8;        /* per-bucket pair-SoA int8 centroids:
+                                         block base = cent8_bucket_off[bucket];
+                                         pair pp at +pp*2*ncl; centroid i at +2*i */
     const int16_t      *vecs16;  /* point-major, exact re-rank                  */
     const int8_t       *vecs8;   /* per-cluster pair-SoA: cluster base =
                                     clust_pt_off[c]*VPAD; pair pp at +pp*2*cnt;

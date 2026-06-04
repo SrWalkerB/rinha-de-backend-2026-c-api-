@@ -36,6 +36,7 @@ int ds_open(Dataset *ds, const char *path) {
     ds->nrefs    = h->nrefs;
     ds->clust_pt_off = (const uint32_t *)(cb + h->clust_pt_off_off);
     ds->centroids    = (const int16_t  *)(cb + h->centroids_off);
+    ds->cent8    = (const int8_t   *)(cb + h->cent8_off);
     ds->vecs16   = (const int16_t  *)(cb + h->vecs16_off);
     ds->vecs8    = (const int8_t   *)(cb + h->vecs8_off);
     ds->orig     = (const uint32_t *)(cb + h->orig_off);

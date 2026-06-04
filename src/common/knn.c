@@ -105,6 +105,24 @@ static inline void scan_cluster(const Dataset *ds, const int8_t *q8, uint32_t lo
     }
 }
 
+/* size-P binary max-heap keeping the P SMALLEST (d, idx) offered. */
+static inline void heap_push_min(int64_t *pd, uint32_t *pc, int *filled, int P,
+                                 int64_t d, uint32_t idx) {
+    if (*filled < P) {
+        int i = (*filled)++;
+        pd[i]=d; pc[i]=idx;
+        while (i>0){ int par=(i-1)>>1; if(pd[par]>=pd[i])break;
+            int64_t td=pd[par];pd[par]=pd[i];pd[i]=td; uint32_t tc=pc[par];pc[par]=pc[i];pc[i]=tc; i=par; }
+    } else if (d < pd[0]) {
+        pd[0]=d; pc[0]=idx; int i=0;
+        for(;;){ int l=2*i+1,r=l+1,m=i;
+            if(l<P&&pd[l]>pd[m])m=l;
+            if(r<P&&pd[r]>pd[m])m=r;
+            if(m==i)break;
+            int64_t td=pd[m];pd[m]=pd[i];pd[i]=td; uint32_t tc=pc[m];pc[m]=pc[i];pc[i]=tc; i=m; }
+    }
+}
+
 int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe) {
     uint32_t cb0 = ds->hdr->clust_bucket_off[bucket_key];
     uint32_t cb1 = ds->hdr->clust_bucket_off[bucket_key+1];
@@ -126,34 +144,46 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
             scan_cluster(ds, q8, lo, hi-lo, &C);
         }
     } else {
-        /* select the nprobe nearest centroids via a size-P binary max-heap:
-         * O(ncl·log P) instead of the O(ncl·P) sorted-insert, which dominated at
-         * high nprobe. Order within the kept set is irrelevant (we scan them all). */
+        /* Select the nprobe nearest centroids. Centroids are scanned in the SAME
+         * int8 dim-pair-interleaved SoA as points (8 at a time, vpmaddwd, no
+         * per-centroid horizontal reduction) — this was the dominant compute term
+         * when done one-at-a-time in int16. Coarser int8 selection only affects
+         * WHICH clusters are probed; the final 5-NN is still re-ranked exactly in
+         * int16 over the candidate points, so detection labels are unaffected
+         * (verify.c confirms E=0). */
         int P = nprobe; if (P > NPROBE_MAX) P = NPROBE_MAX;
         int64_t pd[NPROBE_MAX]; uint32_t pc[NPROBE_MAX];
         int filled = 0;
-        const int16_t *cent = ds->centroids;
 #ifdef KNN_COUNT
         g_scan_cents += ncl;
 #endif
-        for (uint32_t c=cb0; c<cb1; c++) {
-            int64_t d = dist16v(qv, cent + (size_t)c*VLANES);
-            if (filled < P) {
-                int i = filled++;                          /* push + sift up */
-                pd[i]=d; pc[i]=c;
-                while (i>0) { int par=(i-1)>>1; if (pd[par]>=pd[i]) break;
-                    int64_t td=pd[par]; pd[par]=pd[i]; pd[i]=td;
-                    uint32_t tc=pc[par]; pc[par]=pc[i]; pc[i]=tc; i=par; }
-            } else if (d < pd[0]) {
-                pd[0]=d; pc[0]=c;                          /* replace max + sift down */
-                int i=0;
-                for (;;) { int l=2*i+1, r=l+1, m=i;
-                    if (l<P && pd[l]>pd[m]) m=l;
-                    if (r<P && pd[r]>pd[m]) m=r;
-                    if (m==i) break;
-                    int64_t td=pd[m]; pd[m]=pd[i]; pd[i]=td;
-                    uint32_t tc=pc[m]; pc[m]=pc[i]; pc[i]=tc; i=m; }
+        const int8_t *csoa = ds->cent8 + ds->hdr->cent8_bucket_off[bucket_key];
+        uint32_t lc = 0;
+#if defined(__AVX2__)
+        __m256i qp[GPAIRS];
+        for (int pp=0; pp<GPAIRS; pp++)
+            qp[pp] = _mm256_set1_epi32((int)((uint16_t)q8[2*pp] | ((uint32_t)(uint16_t)q8[2*pp+1] << 16)));
+        for (; lc + 8 <= ncl; lc += 8) {
+            __m256i acc = _mm256_setzero_si256();
+            for (int pp=0; pp<GPAIRS; pp++) {
+                __m128i r8  = _mm_loadu_si128((const __m128i *)(csoa + (size_t)pp*2*ncl + (size_t)lc*2));
+                __m256i r16 = _mm256_cvtepi8_epi16(r8);
+                __m256i df  = _mm256_sub_epi16(r16, qp[pp]);
+                acc = _mm256_add_epi32(acc, _mm256_madd_epi16(df, df));
             }
+            int32_t dist[8];
+            _mm256_storeu_si256((__m256i *)dist, acc);
+            for (int k=0;k<8;k++) heap_push_min(pd, pc, &filled, P, dist[k], cb0 + lc + (uint32_t)k);
+        }
+#endif
+        for (; lc < ncl; lc++) {
+            int32_t s=0;
+            for (int pp=0; pp<GPAIRS; pp++) {
+                int ea = q8[2*pp]   - csoa[(size_t)pp*2*ncl + (size_t)lc*2 + 0];
+                int eb = q8[2*pp+1] - csoa[(size_t)pp*2*ncl + (size_t)lc*2 + 1];
+                s += ea*ea + eb*eb;
+            }
+            heap_push_min(pd, pc, &filled, P, s, cb0 + lc);
         }
         for (int i=0;i<filled;i++) {
             uint32_t c = pc[i];

@@ -278,16 +278,47 @@ int main(int argc, char **argv) {
     }
     free(qv); free(frd); free(neworder);
 
+    /* ── per-bucket int8 pair-SoA centroids (batched probe scan, mirrors vecs8) ──
+     * all_cent is int16 in DMAP8 order (lanes >=VDIM8 are 0). Quantize to int8 and
+     * lay each bucket's centroids out dim-pair-interleaved so the query can scan 8
+     * centroids at a time with vpmaddwd — no per-centroid horizontal reduction. */
+    uint32_t cent8_bucket_off[NBUCKETS+1]; cent8_bucket_off[0]=0;
+    for (int b=0;b<NBUCKETS;b++){
+        uint32_t ncl_b = clust_bucket_off[b+1]-clust_bucket_off[b];
+        cent8_bucket_off[b+1] = cent8_bucket_off[b] + ncl_b*(uint32_t)VPAD;
+    }
+    size_t cent8_len = cent8_bucket_off[NBUCKETS];
+    int8_t *cent8 = calloc(cent8_len + 64, 1);
+    if(!cent8){fprintf(stderr,"oom cent8\n");return 1;}
+    for (int b=0;b<NBUCKETS;b++){
+        uint32_t cb0 = clust_bucket_off[b];
+        uint32_t ncl_b = clust_bucket_off[b+1]-cb0;
+        int8_t *blk = cent8 + cent8_bucket_off[b];
+        for (uint32_t i=0;i<ncl_b;i++){
+            const int16_t *cv = all_cent + (size_t)(cb0+i)*VLANES; /* DMAP8 order */
+            for (int pp=0; pp<GPAIRS; pp++){
+                int da=2*pp, db=2*pp+1;
+                int8_t va=(da<VDIM8)?q16_to_q8(cv[da]):0;
+                int8_t vb=(db<VDIM8)?q16_to_q8(cv[db]):0;
+                blk[(size_t)pp*2*ncl_b + (size_t)i*2 + 0]=va;
+                blk[(size_t)pp*2*ncl_b + (size_t)i*2 + 1]=vb;
+            }
+        }
+    }
+
     PackedHeader h = {0};
     h.magic=PACKED_MAGIC; h.version=PACKED_VERSION; h.vdim=VDIM; h.vlanes=VLANES;
     h.nrefs=(uint32_t)n; h.nbuckets=NBUCKETS; h.nclust=ncl_total;
     memcpy(h.bucket_off, off, sizeof(off));
     memcpy(h.clust_bucket_off, clust_bucket_off, sizeof(clust_bucket_off));
+    memcpy(h.cent8_bucket_off, cent8_bucket_off, sizeof(cent8_bucket_off));
 
     size_t pos = align_up(sizeof(PackedHeader), 64);
     h.clust_pt_off_off = pos; pos += ((size_t)ncl_total+1)*sizeof(uint32_t);
     pos = align_up(pos, 64);
     h.centroids_off = pos; pos += (size_t)ncl_total*VLANES*sizeof(int16_t);
+    pos = align_up(pos, 64);
+    h.cent8_off = pos; pos += cent8_len + 64;
     pos = align_up(pos, 64);
     h.vecs16_off = pos; pos += (size_t)n*VDIM8*sizeof(int16_t);
     h.vecs8_off  = pos; pos += (size_t)n*VPAD + 64;
@@ -301,6 +332,7 @@ int main(int argc, char **argv) {
     fwrite(&h,sizeof(h),1,f); at+=sizeof(h);
     PAD_TO(h.clust_pt_off_off); fwrite(clust_pt_off,sizeof(uint32_t),(size_t)ncl_total+1,f); at+=((size_t)ncl_total+1)*sizeof(uint32_t);
     PAD_TO(h.centroids_off);    fwrite(all_cent,sizeof(int16_t),(size_t)ncl_total*VLANES,f); at+=(size_t)ncl_total*VLANES*sizeof(int16_t);
+    PAD_TO(h.cent8_off);  fwrite(cent8,1,cent8_len+64,f); at+=cent8_len+64;
     PAD_TO(h.vecs16_off); fwrite(ov16,sizeof(int16_t),(size_t)n*VDIM8,f); at+=(size_t)n*VDIM8*sizeof(int16_t);
     PAD_TO(h.vecs8_off);  fwrite(ov8,1,(size_t)n*VPAD+64,f); at+=(size_t)n*VPAD+64;
     PAD_TO(h.orig_off);   fwrite(os,sizeof(uint32_t),n,f); at+=(size_t)n*sizeof(uint32_t);
@@ -308,6 +340,6 @@ int main(int argc, char **argv) {
     fclose(f);
 
     fprintf(stderr,"wrote %s  (%zu refs, %u clusters, %.1f MB)\n",argv[2],n,ncl_total,h.total_len/1048576.0);
-    free(ov16);free(ov8);free(os);free(of);free(clust_pt_off);free(all_cent);
+    free(ov16);free(ov8);free(os);free(of);free(clust_pt_off);free(all_cent);free(cent8);
     return 0;
 }
