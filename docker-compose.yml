@@ -1,7 +1,9 @@
-# SUBMISSION compose — goes to the `submission` branch as docker-compose.yml.
-# Uses PUBLIC prebuilt images (packed.bin is baked into the api image at build).
-# Replace srwalkerb with your registry namespace before pushing.
-# Total limits: 1.0 CPU, 324MB (cap 1.0 / 350MB). bridge net, port 9999.
+# SUBMISSION compose (submission branch). Uses PUBLIC prebuilt images
+# (packed.bin baked into the api image at build). Pinned to immutable :v3 tags.
+#
+# Topology: round-robin LB (kernel iptables-DNAT, userspace-relay fallback) + 2
+# api workers running the per-bucket IVF 5-NN fraud search (tc75 index).
+# Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
     image: docker.io/srwalkerb/rinha-api-c:v3
@@ -14,7 +16,7 @@ services:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.45", memory: "160M" }
+        limits: { cpus: "0.40", memory: "160M" }
 
   api2:
     image: docker.io/srwalkerb/rinha-api-c:v3
@@ -27,18 +29,21 @@ services:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.45", memory: "160M" }
+        limits: { cpus: "0.40", memory: "160M" }
 
   lb:
-    image: docker.io/srwalkerb/rinha-lb-c:v2
+    image: docker.io/srwalkerb/rinha-lb-nft:v3
     command: ["9999", "api1", "8001", "api2", "8001"]
+    cap_add: [NET_ADMIN]
+    sysctls:
+      - net.ipv4.ip_forward=1
     ports:
       - "9999:9999"
     networks: [app]
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.10", memory: "24M" }
+        limits: { cpus: "0.20", memory: "24M" }
 
 networks:
   app:
