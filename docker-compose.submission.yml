@@ -11,7 +11,9 @@ services:
     environment:
       - NPROBE=256
     networks: [app]
-    cap_add: [IPC_LOCK]
+    # mlock the 115MB index into RAM via an unlimited memlock rlimit — works
+    # WITHOUT CAP_IPC_LOCK (the engine forbids cap_add) since RLIMIT_MEMLOCK=inf
+    # bypasses the per-mlock cap check.
     ulimits:
       memlock: -1
     deploy:
@@ -24,7 +26,6 @@ services:
     environment:
       - NPROBE=256
     networks: [app]
-    cap_add: [IPC_LOCK]
     ulimits:
       memlock: -1
     deploy:
@@ -32,11 +33,11 @@ services:
         limits: { cpus: "0.40", memory: "160M" }
 
   lb:
+    # No NET_ADMIN / sysctls (engine forbids them): lb-nft.sh can't program the
+    # kernel iptables-DNAT path, so it auto-falls back to the userspace epoll
+    # relay (/app/lb). Pure round-robin L4 forwarding, never reads payloads.
     image: docker.io/srwalkerb/rinha-lb-nft:latest
     command: ["9999", "api1", "8001", "api2", "8001"]
-    cap_add: [NET_ADMIN]
-    sysctls:
-      - net.ipv4.ip_forward=1
     ports:
       - "9999:9999"
     networks: [app]

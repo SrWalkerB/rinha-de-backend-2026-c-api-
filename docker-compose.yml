@@ -1,11 +1,11 @@
 # Local/main compose — builds images from source.
-# Topology: round-robin LB (kernel DNAT, userspace-relay fallback) + 2 api workers.
+# Topology: round-robin LB (userspace epoll relay) + 2 api workers.
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 #
-# The LB forwards in the kernel (iptables DNAT + conntrack) when NET_ADMIN is
-# available, costing ~no cgroup CPU; otherwise it falls back to the userspace
-# epoll relay. Either way it never inspects payloads. The freed budget goes to
-# the two API workers (0.40 each), which run the per-bucket IVF 5-NN search.
+# The engine forbids cap_add/sysctls, so we use NO capabilities: the api mlocks
+# its index via an unlimited memlock rlimit (no CAP_IPC_LOCK needed), and the LB
+# runs the userspace epoll relay (no NET_ADMIN / kernel DNAT). The relay never
+# reads payloads — pure round-robin L4 forwarding.
 services:
   api1:
     build:
@@ -14,9 +14,8 @@ services:
     image: rinha-api-c:local
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=${NPROBE:-64}
+      - NPROBE=${NPROBE:-256}
     networks: [app]
-    cap_add: [IPC_LOCK]
     ulimits:
       memlock: -1
     deploy:
@@ -30,9 +29,8 @@ services:
     image: rinha-api-c:local
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=${NPROBE:-64}
+      - NPROBE=${NPROBE:-256}
     networks: [app]
-    cap_add: [IPC_LOCK]
     ulimits:
       memlock: -1
     depends_on: [api1]
@@ -46,9 +44,6 @@ services:
       dockerfile: Dockerfile.lbnft
     image: rinha-lb-nft:local
     command: ["9999", "api1", "8001", "api2", "8001"]
-    cap_add: [NET_ADMIN]
-    sysctls:
-      - net.ipv4.ip_forward=1
     ports:
       - "9999:9999"
     networks: [app]
