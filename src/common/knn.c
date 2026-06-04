@@ -188,6 +188,19 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
         for (int i=0;i<filled;i++) {
             uint32_t c = pc[i];
             uint32_t lo = ds->clust_pt_off[c], hi = ds->clust_pt_off[c+1];
+#if defined(__AVX2__)
+            /* The probed clusters are scattered across the 110MB index, so each
+             * new cluster's first cache lines are a DRAM miss. Prefetch the next
+             * cluster's vecs8 block (and its offset) while we scan this one to
+             * overlap that latency. Hint-only: results are byte-identical. */
+            if (i+1 < filled) {
+                uint32_t nlo = ds->clust_pt_off[pc[i+1]];
+                const char *np = (const char *)(ds->vecs8 + (size_t)nlo*VPAD);
+                _mm_prefetch(np,       _MM_HINT_T0);
+                _mm_prefetch(np + 64,  _MM_HINT_T0);
+                _mm_prefetch(np + 128, _MM_HINT_T0);
+            }
+#endif
 #ifdef KNN_COUNT
             g_scan_points += hi-lo;
 #endif
