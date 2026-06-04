@@ -4,8 +4,10 @@
 # Total limits: 1.0 CPU, 324MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v2
+    image: docker.io/srwalkerb/rinha-api-c:v3
     command: ["/app/packed.bin", "8001"]
+    environment:
+      - NPROBE=256
     networks: [app]
     cap_add: [IPC_LOCK]
     ulimits:
@@ -15,8 +17,10 @@ services:
         limits: { cpus: "0.45", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v2
+    image: docker.io/srwalkerb/rinha-api-c:v3
     command: ["/app/packed.bin", "8001"]
+    environment:
+      - NPROBE=256
     networks: [app]
     cap_add: [IPC_LOCK]
     ulimits:
