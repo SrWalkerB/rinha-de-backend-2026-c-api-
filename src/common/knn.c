@@ -42,6 +42,11 @@ static inline int64_t dist16v(const int16_t *q, const int16_t *r) {
 
 static inline int is_fraud(const Dataset *ds, uint32_t i){ return (ds->fraud[i>>3]>>(i&7))&1u; }
 
+#ifdef KNN_COUNT
+uint64_t g_scan_points = 0;   /* points distance-evaluated in the coarse int8 scan */
+uint64_t g_scan_cents  = 0;   /* centroids distance-evaluated for probe selection  */
+#endif
+
 static inline void top_insert(int64_t d, uint32_t oi, uint32_t idx,
                               int64_t *bd, uint32_t *bo, uint32_t *bi) {
     if (d > bd[KNN_K-1] || (d == bd[KNN_K-1] && oi >= bo[KNN_K-1])) return;
@@ -121,26 +126,41 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
             scan_cluster(ds, q8, lo, hi-lo, &C);
         }
     } else {
-        /* select the nprobe nearest centroids (sorted-insert top-P) */
+        /* select the nprobe nearest centroids via a size-P binary max-heap:
+         * O(ncl·log P) instead of the O(ncl·P) sorted-insert, which dominated at
+         * high nprobe. Order within the kept set is irrelevant (we scan them all). */
         int P = nprobe; if (P > NPROBE_MAX) P = NPROBE_MAX;
         int64_t pd[NPROBE_MAX]; uint32_t pc[NPROBE_MAX];
         int filled = 0;
         const int16_t *cent = ds->centroids;
+#ifdef KNN_COUNT
+        g_scan_cents += ncl;
+#endif
         for (uint32_t c=cb0; c<cb1; c++) {
             int64_t d = dist16v(qv, cent + (size_t)c*VLANES);
             if (filled < P) {
-                int j = filled++;
-                while (j>0 && pd[j-1] > d) { pd[j]=pd[j-1]; pc[j]=pc[j-1]; j--; }
-                pd[j]=d; pc[j]=c;
-            } else if (d < pd[P-1]) {
-                int j = P-1;
-                while (j>0 && pd[j-1] > d) { pd[j]=pd[j-1]; pc[j]=pc[j-1]; j--; }
-                pd[j]=d; pc[j]=c;
+                int i = filled++;                          /* push + sift up */
+                pd[i]=d; pc[i]=c;
+                while (i>0) { int par=(i-1)>>1; if (pd[par]>=pd[i]) break;
+                    int64_t td=pd[par]; pd[par]=pd[i]; pd[i]=td;
+                    uint32_t tc=pc[par]; pc[par]=pc[i]; pc[i]=tc; i=par; }
+            } else if (d < pd[0]) {
+                pd[0]=d; pc[0]=c;                          /* replace max + sift down */
+                int i=0;
+                for (;;) { int l=2*i+1, r=l+1, m=i;
+                    if (l<P && pd[l]>pd[m]) m=l;
+                    if (r<P && pd[r]>pd[m]) m=r;
+                    if (m==i) break;
+                    int64_t td=pd[m]; pd[m]=pd[i]; pd[i]=td;
+                    uint32_t tc=pc[m]; pc[m]=pc[i]; pc[i]=tc; i=m; }
             }
         }
         for (int i=0;i<filled;i++) {
             uint32_t c = pc[i];
             uint32_t lo = ds->clust_pt_off[c], hi = ds->clust_pt_off[c+1];
+#ifdef KNN_COUNT
+            g_scan_points += hi-lo;
+#endif
             scan_cluster(ds, q8, lo, hi-lo, &C);
         }
     }

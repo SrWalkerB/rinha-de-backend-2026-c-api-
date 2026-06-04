@@ -4,7 +4,11 @@
 /lb
 /verify
 /bench
+/benchc
+/lat
+/pivf
 packed.bin
+packed_*.bin
 
 # C build output
 *.o
@@ -60,6 +64,7 @@ desktop.ini
 src/verify/analyze.c
 src/verify/measure_cand.c
 src/verify/probe.c
+src/verify/pivf.c
 
 # Local iteration scaffolding (not part of submission)
 Dockerfile.dev

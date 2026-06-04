@@ -48,6 +48,14 @@ int main(int argc, char **argv) {
     long sink = 0;
     for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
 
+#ifdef KNN_COUNT
+    extern uint64_t g_scan_points, g_scan_cents;
+    g_scan_points = 0; g_scan_cents = 0;
+    for (int i = 0; i < n; i++) (void)knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
+    printf("COUNT: points/query=%.0f  centroids/query=%.0f  (n=%d)\n",
+           (double)g_scan_points/n, (double)g_scan_cents/n, n);
+#endif
+
     double t0 = now();
     for (int r = 0; r < loops; r++)
         for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i], nprobe);

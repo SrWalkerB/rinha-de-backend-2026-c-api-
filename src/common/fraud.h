@@ -41,9 +41,16 @@
 #define FRAUD_DENY_COUNT 3
 
 /* IVF build/query parameters. */
-#define TARGET_CLUSTER 600  /* aim for ~this many points per k-means cluster   */
+#define TARGET_CLUSTER 75   /* aim for ~this many points per k-means cluster.
+                               Finer than v12's 600: ~6x fewer points scanned
+                               per query at E=0 (138k->22k pts) — the dominant
+                               compute term, so ~2x lower latency. Centroid count
+                               rises (~40k total) but stays the cheaper term at
+                               nprobe=256. See knn.c.                            */
 #define KMEANS_ITERS   12   /* Lloyd iterations at build time                  */
-#define NPROBE_DEFAULT 32   /* clusters probed per query (runtime overridable)  */
+#define NPROBE_DEFAULT 256  /* clusters probed per query (runtime overridable).
+                               tc75 reaches E=0 at nprobe>=192; 256 keeps recall
+                               margin for the heavier final test script.        */
 #define NPROBE_MAX     512
 
 typedef struct {

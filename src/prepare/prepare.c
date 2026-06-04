@@ -129,10 +129,14 @@ int main(int argc, char **argv) {
     int16_t  *all_cent = NULL; uint32_t cent_cap = 0, ncl_total = 0;
     if (!clabel) { fprintf(stderr,"oom\n"); return 1; }
 
+    int tcl = TARGET_CLUSTER;
+    { const char *e = getenv("TARGET_CLUSTER"); if (e && atoi(e) > 0) tcl = atoi(e); }
+    fprintf(stderr, "TARGET_CLUSTER=%d\n", tcl);
+
     for (int b = 0; b < NBUCKETS; b++) {
         uint32_t base = off[b], cnt = counts[b];
         if (cnt == 0) { clust_bucket_off[b+1] = clust_bucket_off[b]; continue; }
-        uint32_t C = (cnt + TARGET_CLUSTER/2) / TARGET_CLUSTER;
+        uint32_t C = (cnt + (uint32_t)tcl/2) / (uint32_t)tcl;
         if (C < 1) C = 1;
         if (C > cnt) C = cnt;
 
@@ -148,10 +152,36 @@ int main(int argc, char **argv) {
             int16_t *d = pts + (size_t)i*VLANES;
             for (int k=0;k<VDIM8;k++) d[k]=v[dmap8[k]];
         }
-        /* init: evenly strided points */
-        for (uint32_t j=0;j<C;j++){
-            uint32_t src = (uint32_t)(((uint64_t)j*cnt)/C);
-            memcpy(cent+(size_t)j*VLANES, pts+(size_t)src*VLANES, VLANES*sizeof(int16_t));
+        /* init: k-means++ (D^2 weighting) — better-spread seeds than strided,
+         * which lifts IVF recall so E=0 is reached at a lower nprobe.
+         * Toggle off with KMPP=0 (falls back to evenly strided). */
+        int use_kmpp = 1; { const char *e=getenv("KMPP"); if(e&&atoi(e)==0) use_kmpp=0; }
+        if (use_kmpp && C>1) {
+            int64_t *mind = malloc((size_t)cnt*sizeof(int64_t));
+            uint32_t s0 = rnd()%cnt;
+            memcpy(cent, pts+(size_t)s0*VLANES, VLANES*sizeof(int16_t));
+            int64_t tot=0;
+            for (uint32_t i=0;i<cnt;i++){ mind[i]=dist16(pts+(size_t)i*VLANES, cent); tot+=mind[i]; }
+            for (uint32_t j=1;j<C;j++){
+                /* pick next seed with prob proportional to mind[] (D^2) */
+                uint32_t pick;
+                if (tot<=0) { pick = rnd()%cnt; }
+                else {
+                    int64_t target = (int64_t)(( (unsigned long long)rnd()<<31 | rnd() ) % (unsigned long long)tot);
+                    int64_t acc=0; pick=cnt-1;
+                    for (uint32_t i=0;i<cnt;i++){ acc+=mind[i]; if(acc>target){pick=i;break;} }
+                }
+                int16_t *cj = cent+(size_t)j*VLANES;
+                memcpy(cj, pts+(size_t)pick*VLANES, VLANES*sizeof(int16_t));
+                tot=0;
+                for (uint32_t i=0;i<cnt;i++){ int64_t d=dist16(pts+(size_t)i*VLANES, cj); if(d<mind[i])mind[i]=d; tot+=mind[i]; }
+            }
+            free(mind);
+        } else {
+            for (uint32_t j=0;j<C;j++){
+                uint32_t src = (uint32_t)(((uint64_t)j*cnt)/C);
+                memcpy(cent+(size_t)j*VLANES, pts+(size_t)src*VLANES, VLANES*sizeof(int16_t));
+            }
         }
         for (int it=0; it<KMEANS_ITERS; it++){
             memset(sum,0,(size_t)C*VDIM8*sizeof(int64_t));

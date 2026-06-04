@@ -9,7 +9,7 @@ services:
     image: docker.io/srwalkerb/rinha-api-c:latest
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=64
+      - NPROBE=256
     networks: [app]
     cap_add: [IPC_LOCK]
     ulimits:
@@ -22,7 +22,7 @@ services:
     image: docker.io/srwalkerb/rinha-api-c:latest
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=64
+      - NPROBE=256
     networks: [app]
     cap_add: [IPC_LOCK]
     ulimits:
