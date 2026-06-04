@@ -13,25 +13,25 @@ services:
     image: docker.io/srwalkerb/rinha-api-c:v3
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=256
+      - NPROBE=192
     networks: [app]
     ulimits:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.45", memory: "160M" }
 
   api2:
     image: docker.io/srwalkerb/rinha-api-c:v3
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=256
+      - NPROBE=192
     networks: [app]
     ulimits:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.45", memory: "160M" }
 
   lb:
     image: docker.io/srwalkerb/rinha-lb-nft:v3
@@ -42,7 +42,7 @@ services:
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.20", memory: "24M" }
+        limits: { cpus: "0.10", memory: "24M" }
 
 networks:
   app:
