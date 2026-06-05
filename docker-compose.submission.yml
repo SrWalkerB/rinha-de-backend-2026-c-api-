@@ -6,6 +6,12 @@
 # traffic goes over Unix sockets on a shared named volume (no TCP), so the LB
 # never touches the network stack for forwarding.
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
+#
+# CPU split api 0.375 + 0.375, lb 0.25: the kNN compute is ~tens of us so the
+# APIs are never throughput-bound; on the slow shared test host the p99 tail is
+# scheduling/wakeup latency, so give the on-CPU work more quota and keep the
+# relay (only shuttles ~600B/req) on a quarter core. Same v12 images/index, so
+# detection labels stay byte-identical (verify E=0).
 services:
   api1:
     image: docker.io/srwalkerb/rinha-api-c:v12
@@ -22,7 +28,7 @@ services:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.25", memory: "160M" }
+        limits: { cpus: "0.375", memory: "160M" }
 
   api2:
     image: docker.io/srwalkerb/rinha-api-c:v12
@@ -37,7 +43,7 @@ services:
     depends_on: [api1]
     deploy:
       resources:
-        limits: { cpus: "0.25", memory: "160M" }
+        limits: { cpus: "0.375", memory: "160M" }
 
   lb:
     # Internal forwarding is the userspace epoll relay (/app/lb) over the two
@@ -53,7 +59,7 @@ services:
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.50", memory: "24M" }
+        limits: { cpus: "0.25", memory: "24M" }
 
 networks:
   app:
