@@ -1,51 +1,63 @@
 # SUBMISSION compose (submission branch). Uses PUBLIC prebuilt images
 # (packed.bin baked into the api image at build).
-# api/lb pinned to :v11 — NPROBE=6 uses adaptive confirmation for ambiguous
+# api/lb pinned to :v12 — NPROBE=6 uses adaptive confirmation for ambiguous
 # 1..4-fraud results plus a targeted high-risk 5-fraud confirmation profile.
+#
+# Internal LB->API traffic goes over Unix domain sockets on a shared named
+# volume (`sockets`) instead of TCP, so the LB never touches the network stack
+# for forwarding (pure round-robin L4 relay, never reads payloads).
 #
 # NO cap_add / sysctls (the engine forbids them):
 #   - api mlocks its 115MB index via an unlimited memlock rlimit — works without
 #     CAP_IPC_LOCK because RLIMIT_MEMLOCK=inf bypasses the per-mlock cap check.
-#   - lb runs the userspace epoll relay (lb-nft.sh auto-falls back when it can't
-#     program kernel iptables-DNAT). Pure round-robin L4, never reads payloads.
 # Topology: 1 LB + 2 api (per-bucket IVF 5-NN, tc75 index).
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v11
-    command: ["/app/packed.bin", "8001"]
+    image: docker.io/srwalkerb/rinha-api-c:v12
+    command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
       - NPROBE=6
     networks: [app]
+    volumes:
+      - sockets:/socks
     ulimits:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.25", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v11
-    command: ["/app/packed.bin", "8001"]
+    image: docker.io/srwalkerb/rinha-api-c:v12
+    command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
       - NPROBE=6
     networks: [app]
+    volumes:
+      - sockets:/socks
     ulimits:
       memlock: -1
+    depends_on: [api1]
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.25", memory: "160M" }
 
   lb:
-    image: docker.io/srwalkerb/rinha-lb-nft:v11
-    command: ["9999", "api1", "8001", "api2", "8001"]
+    image: docker.io/srwalkerb/rinha-lb-nft:v12
+    command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
     ports:
       - "9999:9999"
     networks: [app]
+    volumes:
+      - sockets:/socks
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.20", memory: "24M" }
+        limits: { cpus: "0.50", memory: "24M" }
 
 networks:
   app:
     driver: bridge
+
+volumes:
+  sockets:
