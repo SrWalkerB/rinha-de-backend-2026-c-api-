@@ -52,7 +52,7 @@
                                rises (~40k total) but stays the cheaper term at
                                nprobe=256. See knn.c.                            */
 #define KMEANS_ITERS   12   /* Lloyd iterations at build time                  */
-#define NPROBE_DEFAULT 12   /* first-pass clusters probed per query.
+#define NPROBE_DEFAULT 6    /* first-pass clusters probed per query.
                                Non-extreme 1..4-fraud results are confirmed with
                                NPROBE_CONFIRM. A narrow 5-fraud high-risk profile
                                is also confirmed by req_confirm_extreme().       */

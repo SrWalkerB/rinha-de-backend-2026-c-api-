@@ -10,13 +10,13 @@
  * the (distance, original index) tie-break that reproduces the reference labels. */
 #include "fraud.h"
 #include <stdint.h>
-#include <math.h>
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
 
 static inline int8_t q16_to_q8(int16_t v) {
-    long r = lround((double)v * (double)SCALE8 / (double)SCALE);
+    int x = (int)v * SCALE8;
+    int r = (x >= 0) ? (x + SCALE / 2) / SCALE : (x - SCALE / 2) / SCALE;
     if (r >  127) r =  127;
     if (r < -127) r = -127;
     return (int8_t)r;

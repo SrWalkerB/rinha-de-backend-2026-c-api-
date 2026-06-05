@@ -63,8 +63,12 @@ int main(int argc, char **argv) {
             if (approved != exp) {
                 mism_expected++;
                 if (mism_expected <= 20)
-                    fprintf(stderr, "MISMATCH#%ld: ours=%d exp=%d frauds=%d bucket=%d\n",
-                            total, approved, exp, fb, key);
+                    fprintf(stderr,
+                            "MISMATCH#%ld: ours=%d exp=%d frauds=%d bucket=%d amount=%.2f inst=%d cust=%.2f tx=%d unk=%d mcc=%s merch=%.2f online=%d card=%d km=%.2f has_last=%d last_km=%.2f\n",
+                            total, approved, exp, fb, key, req.amount, req.installments,
+                            req.cust_avg, req.tx_count_24h, req.unknown_merchant,
+                            req.mcc, req.merch_avg, req.is_online, req.card_present,
+                            req.km_home, req.has_last, req.last_km);
             }
         }
         if (total <= full_n) {
