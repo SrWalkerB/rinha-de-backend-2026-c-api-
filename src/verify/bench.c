@@ -46,19 +46,19 @@ int main(int argc, char **argv) {
     /* warm */
     int nprobe = NPROBE_DEFAULT; { const char *np=getenv("NPROBE"); if(np&&*np) nprobe=atoi(np);} fprintf(stderr,"nprobe=%d\n",nprobe);
     long sink = 0;
-    for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
+    for (int i = 0; i < n; i++) sink += knn_fraud_count_adaptive(&ds, Q[i], KEY[i], nprobe);
 
 #ifdef KNN_COUNT
     extern uint64_t g_scan_points, g_scan_cents;
     g_scan_points = 0; g_scan_cents = 0;
-    for (int i = 0; i < n; i++) (void)knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
+    for (int i = 0; i < n; i++) (void)knn_fraud_count_adaptive(&ds, Q[i], KEY[i], nprobe);
     printf("COUNT: points/query=%.0f  centroids/query=%.0f  (n=%d)\n",
            (double)g_scan_points/n, (double)g_scan_cents/n, n);
 #endif
 
     double t0 = now();
     for (int r = 0; r < loops; r++)
-        for (int i = 0; i < n; i++) sink += knn_fraud_count(&ds, Q[i], KEY[i], nprobe);
+        for (int i = 0; i < n; i++) sink += knn_fraud_count_adaptive(&ds, Q[i], KEY[i], nprobe);
     double dt = now() - t0;
 
     long total = (long)n * loops;
@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < n; i++) {
             int k = KEY[i];
             double a = now();
-            sink += knn_fraud_count(&ds, Q[i], k, nprobe);
+            sink += knn_fraud_count_adaptive(&ds, Q[i], k, nprobe);
             bt[k] += now() - a; bc[k]++;
         }
     uint32_t *bo = (uint32_t *)ds.hdr->bucket_off;

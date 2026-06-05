@@ -48,9 +48,11 @@
                                rises (~40k total) but stays the cheaper term at
                                nprobe=256. See knn.c.                            */
 #define KMEANS_ITERS   12   /* Lloyd iterations at build time                  */
-#define NPROBE_DEFAULT 192  /* clusters probed per query (runtime overridable).
-                               Local full-test parity stays at E=0 from 192 up;
-                               192 cuts the hot KNN path versus the older 256.   */
+#define NPROBE_DEFAULT 24   /* first-pass clusters probed per query.
+                               Non-extreme 1..4-fraud results are confirmed with
+                               NPROBE_CONFIRM; public full-test parity stays E=0
+                               while cutting the hot KNN path versus fixed 192.  */
+#define NPROBE_CONFIRM 192
 #define NPROBE_MAX     512
 
 typedef struct {
@@ -124,6 +126,7 @@ void ds_close(Dataset *ds);
 
 /* nprobe<=0 => probe every cluster in the bucket (exact within bucket). */
 int  knn_fraud_count(const Dataset *ds, const int16_t q[VLANES], int bucket_key, int nprobe);
+int  knn_fraud_count_adaptive(const Dataset *ds, const int16_t q[VLANES], int bucket_key, int nprobe);
 int  knn_fraud_count_full(const Dataset *ds, const int16_t q[VLANES]);
 
 #endif /* FRAUD_H */

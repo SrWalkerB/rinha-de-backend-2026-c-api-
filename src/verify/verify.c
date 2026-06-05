@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
 
         int16_t q[VLANES];
         int key = vec_build(&req, q);
-        int fb  = knn_fraud_count(&ds, q, key, nprobe);
+        int fb  = knn_fraud_count_adaptive(&ds, q, key, nprobe);
         int approved = (fb < FRAUD_DENY_COUNT);
 
         int exp = read_bool_after(rq, "\"expected_approved\"");

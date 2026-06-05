@@ -23,6 +23,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/un.h>
 
 #define MAXEV    256
 #define RBUF     16384
@@ -102,7 +103,7 @@ static void handle_one(Conn *c, const char *req, const char *body) {
     if (body && req_parse(body, &r) == 0) {
         int16_t q[VLANES];
         int key = vec_build(&r, q);
-        fn = knn_fraud_count(&g_ds, q, key, g_nprobe);
+        fn = knn_fraud_count_adaptive(&g_ds, q, key, g_nprobe);
     }
     memcpy(c->wbuf + c->wlen, g_resp[fn], g_resp_len[fn]);
     c->wlen += g_resp_len[fn];
@@ -186,13 +187,15 @@ static void warm_dataset(void) {
     for (size_t i = 0; i < g_ds.map_len; i += 4096) sink += base[i];
     /* warm the hot code path with a dummy query per bucket */
     int16_t q[VLANES]; memset(q, 0, sizeof(q));
-    for (int b = 0; b < NBUCKETS; b++) sink += knn_fraud_count(&g_ds, q, b, g_nprobe);
+    for (int b = 0; b < NBUCKETS; b++) sink += knn_fraud_count_adaptive(&g_ds, q, b, g_nprobe);
     (void)sink;
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: %s <packed.bin> <port>\n", argv[0]); return 1; }
-    int port = atoi(argv[2]);
+    if (argc != 3) { fprintf(stderr, "usage: %s <packed.bin> <port|unix-socket>\n", argv[0]); return 1; }
+    const char *listen_arg = argv[2];
+    int unix_listen = listen_arg[0] == '/';
+    int port = unix_listen ? 0 : atoi(listen_arg);
 
     if (ds_open(&g_ds, argv[1]) != 0) return 1;
     { const char *np = getenv("NPROBE"); if (np && *np) g_nprobe = atoi(np); }
@@ -200,12 +203,21 @@ int main(int argc, char **argv) {
     build_responses();
     warm_dataset();
 
-    int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int lfd = socket(unix_listen ? AF_UNIX : AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     int one = 1;
-    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    struct sockaddr_in a = { .sin_family = AF_INET, .sin_addr.s_addr = INADDR_ANY,
-                             .sin_port = htons((uint16_t)port) };
-    if (bind(lfd, (struct sockaddr *)&a, sizeof(a)) < 0) { perror("bind"); return 1; }
+    if (!unix_listen) {
+        setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in a = { .sin_family = AF_INET, .sin_addr.s_addr = INADDR_ANY,
+                                 .sin_port = htons((uint16_t)port) };
+        if (bind(lfd, (struct sockaddr *)&a, sizeof(a)) < 0) { perror("bind"); return 1; }
+    } else {
+        struct sockaddr_un a;
+        memset(&a, 0, sizeof(a));
+        a.sun_family = AF_UNIX;
+        snprintf(a.sun_path, sizeof(a.sun_path), "%s", listen_arg);
+        unlink(listen_arg);
+        if (bind(lfd, (struct sockaddr *)&a, sizeof(a)) < 0) { perror("bind unix"); return 1; }
+    }
     if (listen(lfd, 1024) < 0) { perror("listen"); return 1; }
 
     int ep = epoll_create1(0);
@@ -213,7 +225,10 @@ int main(int argc, char **argv) {
     struct epoll_event ev = { .events = EPOLLIN, .data.fd = lfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
 
-    fprintf(stderr, "api ready on :%d (%u refs)\n", port, g_ds.nrefs);
+    if (unix_listen)
+        fprintf(stderr, "api ready on %s (%u refs)\n", listen_arg, g_ds.nrefs);
+    else
+        fprintf(stderr, "api ready on :%d (%u refs)\n", port, g_ds.nrefs);
 
     struct epoll_event evs[MAXEV];
     for (;;) {

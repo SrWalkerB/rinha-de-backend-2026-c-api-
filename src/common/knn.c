@@ -217,6 +217,13 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
     return fr;
 }
 
+int knn_fraud_count_adaptive(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe) {
+    int fr = knn_fraud_count(ds, q16, bucket_key, nprobe);
+    if (nprobe > 0 && nprobe < NPROBE_CONFIRM && fr >= 1 && fr <= 4)
+        fr = knn_fraud_count(ds, q16, bucket_key, NPROBE_CONFIRM);
+    return fr;
+}
+
 /* Exact full brute force over all refs (verify only). */
 int knn_fraud_count_full(const Dataset *ds, const int16_t q16[VLANES]) {
     int64_t bd[KNN_K]; uint32_t bo[KNN_K], bi[KNN_K];

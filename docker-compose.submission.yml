@@ -6,10 +6,10 @@
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v7
+    image: docker.io/srwalkerb/rinha-api-c:v8
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=192
+      - NPROBE=24
     networks: [app]
     # mlock the 115MB index into RAM via an unlimited memlock rlimit — works
     # WITHOUT CAP_IPC_LOCK (the engine forbids cap_add) since RLIMIT_MEMLOCK=inf
@@ -21,10 +21,10 @@ services:
         limits: { cpus: "0.40", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v7
+    image: docker.io/srwalkerb/rinha-api-c:v8
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=192
+      - NPROBE=24
     networks: [app]
     ulimits:
       memlock: -1
@@ -36,7 +36,7 @@ services:
     # No NET_ADMIN / sysctls (engine forbids them): lb-nft.sh can't program the
     # kernel iptables-DNAT path, so it auto-falls back to the userspace epoll
     # relay (/app/lb). Pure round-robin L4 forwarding, never reads payloads.
-    image: docker.io/srwalkerb/rinha-lb-nft:v7
+    image: docker.io/srwalkerb/rinha-lb-nft:v8
     command: ["9999", "api1", "8001", "api2", "8001"]
     ports:
       - "9999:9999"

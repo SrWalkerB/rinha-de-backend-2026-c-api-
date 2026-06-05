@@ -14,6 +14,11 @@ PORT="${1:-9999}"
 H1="${2:-api1}"; P1="${3:-8001}"
 H2="${4:-api2}"; P2="${5:-8001}"
 
+if [ "${2#/}" != "$2" ] && [ "${3#/}" != "$3" ]; then
+    echo "lb: using Unix socket relay (/app/lb)" >&2
+    exec /app/lb "$PORT" "$2" "$3"
+fi
+
 resolve() { getent hosts "$1" | awk '{print $1; exit}'; }
 
 A1=""; A2=""; i=0

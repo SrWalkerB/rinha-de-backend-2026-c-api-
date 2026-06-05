@@ -19,6 +19,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/un.h>
 
 #define MAXEV 256
 /* Per connection we hold two relay buffers (c->b and b->c), so RAM scales as
@@ -29,7 +30,8 @@
 #define BUF   8192
 #define NBK   2
 
-static struct sockaddr_in g_backend[NBK];
+static struct sockaddr_storage g_backend[NBK];
+static socklen_t g_backend_len[NBK];
 static unsigned g_rr = 0;
 
 typedef struct { char buf[BUF]; int len, off; } Half;
@@ -89,15 +91,16 @@ static void on_accept(int ep, int lfd) {
         if (cfd < 0) break;
         if (cfd >= (1 << 16)) { close(cfd); continue; }
 
-        int bfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        unsigned idx = __atomic_fetch_add(&g_rr, 1, __ATOMIC_RELAXED) % NBK;
+        int family = g_backend[idx].ss_family;
+        int bfd = socket(family, SOCK_STREAM | SOCK_NONBLOCK, 0);
         if (bfd < 0 || bfd >= (1 << 16)) { if (bfd >= 0) close(bfd); close(cfd); continue; }
 
         int one = 1;
         setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        setsockopt(bfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        if (family == AF_INET) setsockopt(bfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-        unsigned idx = __atomic_fetch_add(&g_rr, 1, __ATOMIC_RELAXED) % NBK;
-        int r = connect(bfd, (struct sockaddr *)&g_backend[idx], sizeof(g_backend[idx]));
+        int r = connect(bfd, (struct sockaddr *)&g_backend[idx], g_backend_len[idx]);
         if (r < 0 && errno != EINPROGRESS) { close(bfd); close(cfd); continue; }
 
         Conn *c = calloc(1, sizeof(Conn));
@@ -113,22 +116,37 @@ static void on_accept(int ep, int lfd) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 6) { fprintf(stderr, "usage: %s <port> <h1> <p1> <h2> <p2>\n", argv[0]); return 1; }
+    if (argc != 4 && argc != 6) {
+        fprintf(stderr, "usage: %s <port> <sock1> <sock2> | <port> <h1> <p1> <h2> <p2>\n", argv[0]);
+        return 1;
+    }
     int port = atoi(argv[1]);
 
-    for (int i = 0; i < NBK; i++) {
-        const char *host = argv[2 + i*2], *prt = argv[3 + i*2];
-        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res;
-        /* retry DNS: backend service may not be up yet */
-        int rc = -1;
-        for (int t = 0; t < 60; t++) {
-            rc = getaddrinfo(host, prt, &hints, &res);
-            if (rc == 0) break;
-            sleep(1);
+    if (argc == 4) {
+        for (int i = 0; i < NBK; i++) {
+            const char *path = argv[2 + i];
+            struct sockaddr_un *u = (struct sockaddr_un *)&g_backend[i];
+            memset(u, 0, sizeof(*u));
+            u->sun_family = AF_UNIX;
+            snprintf(u->sun_path, sizeof(u->sun_path), "%s", path);
+            g_backend_len[i] = sizeof(*u);
         }
-        if (rc != 0) { fprintf(stderr, "resolve %s:%s failed\n", host, prt); return 1; }
-        memcpy(&g_backend[i], res->ai_addr, sizeof(struct sockaddr_in));
-        freeaddrinfo(res);
+    } else {
+        for (int i = 0; i < NBK; i++) {
+            const char *host = argv[2 + i*2], *prt = argv[3 + i*2];
+            struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res;
+            /* retry DNS: backend service may not be up yet */
+            int rc = -1;
+            for (int t = 0; t < 60; t++) {
+                rc = getaddrinfo(host, prt, &hints, &res);
+                if (rc == 0) break;
+                sleep(1);
+            }
+            if (rc != 0) { fprintf(stderr, "resolve %s:%s failed\n", host, prt); return 1; }
+            memcpy(&g_backend[i], res->ai_addr, sizeof(struct sockaddr_in));
+            g_backend_len[i] = (socklen_t)res->ai_addrlen;
+            freeaddrinfo(res);
+        }
     }
 
     int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -142,7 +160,10 @@ int main(int argc, char **argv) {
     int ep = epoll_create1(0);
     struct epoll_event ev = { .events = EPOLLIN, .data.fd = lfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
-    fprintf(stderr, "lb listening on :%d -> %s:%s, %s:%s\n", port, argv[2], argv[3], argv[4], argv[5]);
+    if (argc == 4)
+        fprintf(stderr, "lb listening on :%d -> %s, %s\n", port, argv[2], argv[3]);
+    else
+        fprintf(stderr, "lb listening on :%d -> %s:%s, %s:%s\n", port, argv[2], argv[3], argv[4], argv[5]);
 
     struct epoll_event evs[MAXEV];
     for (;;) {
