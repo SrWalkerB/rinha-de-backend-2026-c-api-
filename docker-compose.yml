@@ -1,7 +1,7 @@
 # SUBMISSION compose (submission branch). Uses PUBLIC prebuilt images
 # (packed.bin baked into the api image at build).
-# api/lb pinned to :v7 — NPROBE=192 keeps zero detection errors on the public
-# dataset and reduces p99 below the 1ms scoring ceiling in local full k6.
+# api/lb pinned to :v8 — NPROBE=24 uses adaptive confirmation for ambiguous
+# 1..4-fraud results, keeping zero public detection errors with a cheaper hot path.
 #
 # NO cap_add / sysctls (the engine forbids them):
 #   - api mlocks its 115MB index via an unlimited memlock rlimit — works without
@@ -12,10 +12,10 @@
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v7
+    image: docker.io/srwalkerb/rinha-api-c:v8
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=192
+      - NPROBE=24
     networks: [app]
     ulimits:
       memlock: -1
@@ -24,10 +24,10 @@ services:
         limits: { cpus: "0.40", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v7
+    image: docker.io/srwalkerb/rinha-api-c:v8
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=192
+      - NPROBE=24
     networks: [app]
     ulimits:
       memlock: -1
@@ -36,7 +36,7 @@ services:
         limits: { cpus: "0.40", memory: "160M" }
 
   lb:
-    image: docker.io/srwalkerb/rinha-lb-nft:v7
+    image: docker.io/srwalkerb/rinha-lb-nft:v8
     command: ["9999", "api1", "8001", "api2", "8001"]
     ports:
       - "9999:9999"
