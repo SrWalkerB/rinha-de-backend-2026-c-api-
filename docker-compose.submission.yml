@@ -7,17 +7,18 @@
 # never touches the network stack for forwarding.
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 #
-# CPU split api 0.375 + 0.375, lb 0.25: the kNN compute is ~tens of us so the
-# APIs are never throughput-bound; on the slow shared test host the p99 tail is
-# scheduling/wakeup latency, so give the on-CPU work more quota and keep the
-# relay (only shuttles ~600B/req) on a quarter core. Same v12 images/index, so
-# detection labels stay byte-identical (verify E=0).
+# The p99 tail is CPU-quota-independent (identical at LB-heavy and API-heavy
+# splits), so it is per-request wakeup latency, not compute. v13 images add a
+# KEEPWARM_US keep-warm timer that bounds worker idle time to keep the core in a
+# shallow C-state (fast wakeup) instead of deep C6 (~100us exit) — see api.c.
+# Tune/disable KEEPWARM_US here without rebuilding. Index unchanged → E=0.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v12
+    image: docker.io/srwalkerb/rinha-api-c:v13
     command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
       - NPROBE=6
+      - KEEPWARM_US=200
     networks: [app]
     volumes:
       - sockets:/socks
@@ -31,10 +32,11 @@ services:
         limits: { cpus: "0.375", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v12
+    image: docker.io/srwalkerb/rinha-api-c:v13
     command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
       - NPROBE=6
+      - KEEPWARM_US=200
     networks: [app]
     volumes:
       - sockets:/socks
@@ -49,8 +51,10 @@ services:
     # Internal forwarding is the userspace epoll relay (/app/lb) over the two
     # Unix domain sockets the api workers listen on (shared via the `sockets`
     # named volume). Pure round-robin L4 forwarding, never reads payloads.
-    image: docker.io/srwalkerb/rinha-lb-nft:v12
+    image: docker.io/srwalkerb/rinha-lb-nft:v13
     command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
+    environment:
+      - KEEPWARM_US=200
     ports:
       - "9999:9999"
     networks: [app]

@@ -15,6 +15,7 @@ services:
     command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
       - NPROBE=6
+      - KEEPWARM_US=200
     networks: [app]
     volumes:
       - sockets:/socks
@@ -32,6 +33,7 @@ services:
     command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
       - NPROBE=6
+      - KEEPWARM_US=200
     networks: [app]
     volumes:
       - sockets:/socks
@@ -48,6 +50,8 @@ services:
       dockerfile: Dockerfile.lbnft
     image: rinha-lb-nft:local
     command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
+    environment:
+      - KEEPWARM_US=200
     ports:
       - "9999:9999"
     networks: [app]
