@@ -1,26 +1,25 @@
 # SUBMISSION compose (submission branch). Uses PUBLIC prebuilt images
 # (packed.bin baked into the api image at build).
-# api/lb pinned to :v12 — NPROBE=6 uses adaptive confirmation for ambiguous
-# 1..4-fraud results plus a targeted high-risk 5-fraud confirmation profile.
+# api/lb pinned to :v13 — NPROBE=6 adaptive confirmation; Unix-socket LB<->API.
 #
-# Internal LB->API traffic goes over Unix domain sockets on a shared named
-# volume (`sockets`) instead of TCP, so the LB never touches the network stack
-# for forwarding (pure round-robin L4 relay, never reads payloads).
+# The official p99 (~1.46ms) was identical at LB-heavy and API-heavy CPU splits,
+# proving the tail is per-request wakeup latency, not compute (kNN is ~tens of
+# us). v13 adds a KEEPWARM_US keep-warm timer that bounds worker idle time so the
+# core stays in a shallow C-state (fast wakeup) instead of deep C6 (~100us exit).
+# Sweep/disable KEEPWARM_US below without rebuilding. Index unchanged → E=0.
 #
-# NO cap_add / sysctls (the engine forbids them):
-#   - api mlocks its 115MB index via an unlimited memlock rlimit — works without
-#     CAP_IPC_LOCK because RLIMIT_MEMLOCK=inf bypasses the per-mlock cap check.
-# Topology: 1 LB + 2 api (per-bucket IVF 5-NN, tc75 index).
-# CPU split api 0.375 + 0.375, lb 0.25: kNN compute is ~tens of us so the p99
-# tail is scheduling/wakeup latency on the slow shared host, not compute — give
-# the on-CPU work more quota; the relay only shuttles ~600B/req.
+# NO cap_add / sysctls (the engine forbids them): api mlocks its 115MB index via
+# an unlimited memlock rlimit (RLIMIT_MEMLOCK=inf bypasses the per-mlock cap).
+# Topology: 1 LB + 2 api (per-bucket IVF 5-NN, tc75 index). CPU split
+# 0.375/0.375/0.25 (proven p99-neutral; kept for headroom).
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v12
+    image: docker.io/srwalkerb/rinha-api-c:v13
     command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
       - NPROBE=6
+      - KEEPWARM_US=200
     networks: [app]
     volumes:
       - sockets:/socks
@@ -31,10 +30,11 @@ services:
         limits: { cpus: "0.375", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v12
+    image: docker.io/srwalkerb/rinha-api-c:v13
     command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
       - NPROBE=6
+      - KEEPWARM_US=200
     networks: [app]
     volumes:
       - sockets:/socks
@@ -46,8 +46,10 @@ services:
         limits: { cpus: "0.375", memory: "160M" }
 
   lb:
-    image: docker.io/srwalkerb/rinha-lb-nft:v12
+    image: docker.io/srwalkerb/rinha-lb-nft:v13
     command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
+    environment:
+      - KEEPWARM_US=200
     ports:
       - "9999:9999"
     networks: [app]
