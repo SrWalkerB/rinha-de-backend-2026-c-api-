@@ -48,9 +48,9 @@
                                rises (~40k total) but stays the cheaper term at
                                nprobe=256. See knn.c.                            */
 #define KMEANS_ITERS   12   /* Lloyd iterations at build time                  */
-#define NPROBE_DEFAULT 256  /* clusters probed per query (runtime overridable).
-                               tc75 reaches E=0 at nprobe>=192; 256 keeps recall
-                               margin for the heavier final test script.        */
+#define NPROBE_DEFAULT 192  /* clusters probed per query (runtime overridable).
+                               Local full-test parity stays at E=0 from 192 up;
+                               192 cuts the hot KNN path versus the older 256.   */
 #define NPROBE_MAX     512
 
 typedef struct {

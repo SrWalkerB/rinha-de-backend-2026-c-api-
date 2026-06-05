@@ -5,21 +5,22 @@ CFLAGS  ?= -O3 -std=c11 -march=x86-64-v2 -mavx2 -mfma -flto -Wall -Wextra
 LDLIBS  ?=
 
 COMMON  := src/common/vec.c src/common/packed.c src/common/knn.c src/common/reqparse.c
+HEADERS := src/common/fraud.h src/common/reqparse.h
 
 .PHONY: all clean
 all: prepare api lb verify
 
-prepare: src/prepare/prepare.c $(COMMON)
-	$(CC) $(CFLAGS) -o $@ $^ -lz -lm
+prepare: src/prepare/prepare.c $(COMMON) $(HEADERS)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lz -lm
 
-api: src/api/api.c $(COMMON)
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+api: src/api/api.c $(COMMON) $(HEADERS)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lm
 
-verify: src/verify/verify.c $(COMMON)
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+verify: src/verify/verify.c $(COMMON) $(HEADERS)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lm
 
-bench: src/verify/bench.c $(COMMON)
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+bench: src/verify/bench.c $(COMMON) $(HEADERS)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) -lm
 
 lb: src/lb/lb.c
 	$(CC) $(CFLAGS) -o $@ $^
