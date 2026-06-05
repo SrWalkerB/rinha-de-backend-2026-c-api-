@@ -18,7 +18,7 @@ services:
     command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
       - NPROBE=6
-      - KEEPWARM_US=30
+      - KEEPWARM_US=50
     networks: [app]
     volumes:
       - sockets:/socks
@@ -36,7 +36,7 @@ services:
     command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
       - NPROBE=6
-      - KEEPWARM_US=30
+      - KEEPWARM_US=50
     networks: [app]
     volumes:
       - sockets:/socks
@@ -54,7 +54,7 @@ services:
     image: docker.io/srwalkerb/rinha-lb-nft:v13
     command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
     environment:
-      - KEEPWARM_US=30
+      - KEEPWARM_US=50
     ports:
       - "9999:9999"
     networks: [app]
