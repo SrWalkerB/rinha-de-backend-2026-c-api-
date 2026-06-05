@@ -1,16 +1,20 @@
 # SUBMISSION compose — goes to the `submission` branch as docker-compose.yml.
 # Uses PUBLIC prebuilt images (packed.bin is baked into the api image at build).
 #
-# Topology: round-robin LB (kernel iptables-DNAT, userspace-relay fallback) + 2
-# api workers running the per-bucket IVF 5-NN fraud search.
+# Topology: round-robin LB (userspace epoll relay over Unix domain sockets) + 2
+# api workers running the per-bucket IVF 5-NN fraud search. Internal LB->API
+# traffic goes over Unix sockets on a shared named volume (no TCP), so the LB
+# never touches the network stack for forwarding.
 # Total limits: 1.0 CPU, 344MB (cap 1.0 / 350MB). bridge net, port 9999.
 services:
   api1:
-    image: docker.io/srwalkerb/rinha-api-c:v11
-    command: ["/app/packed.bin", "8001"]
+    image: docker.io/srwalkerb/rinha-api-c:v12
+    command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
       - NPROBE=6
     networks: [app]
+    volumes:
+      - sockets:/socks
     # mlock the 115MB index into RAM via an unlimited memlock rlimit — works
     # WITHOUT CAP_IPC_LOCK (the engine forbids cap_add) since RLIMIT_MEMLOCK=inf
     # bypasses the per-mlock cap check.
@@ -18,34 +22,42 @@ services:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.25", memory: "160M" }
 
   api2:
-    image: docker.io/srwalkerb/rinha-api-c:v11
-    command: ["/app/packed.bin", "8001"]
+    image: docker.io/srwalkerb/rinha-api-c:v12
+    command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
       - NPROBE=6
     networks: [app]
+    volumes:
+      - sockets:/socks
     ulimits:
       memlock: -1
+    depends_on: [api1]
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.25", memory: "160M" }
 
   lb:
-    # No NET_ADMIN / sysctls (engine forbids them): lb-nft.sh can't program the
-    # kernel iptables-DNAT path, so it auto-falls back to the userspace epoll
-    # relay (/app/lb). Pure round-robin L4 forwarding, never reads payloads.
-    image: docker.io/srwalkerb/rinha-lb-nft:v11
-    command: ["9999", "api1", "8001", "api2", "8001"]
+    # Internal forwarding is the userspace epoll relay (/app/lb) over the two
+    # Unix domain sockets the api workers listen on (shared via the `sockets`
+    # named volume). Pure round-robin L4 forwarding, never reads payloads.
+    image: docker.io/srwalkerb/rinha-lb-nft:v12
+    command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
     ports:
       - "9999:9999"
     networks: [app]
+    volumes:
+      - sockets:/socks
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.20", memory: "24M" }
+        limits: { cpus: "0.50", memory: "24M" }
 
 networks:
   app:
     driver: bridge
+
+volumes:
+  sockets:
