@@ -26,7 +26,7 @@
 #include <sys/un.h>
 
 #define MAXEV    256
-#define RBUF     16384
+#define RBUF     2048
 #define WBUF     1024
 #define RESP_MAX 160     /* upper bound on one response's size */
 

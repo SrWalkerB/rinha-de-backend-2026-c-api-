@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY src/lb/lb.c .
-RUN gcc -O3 -std=c11 -Wall -Wextra -o /lb lb.c
+RUN gcc -O3 -std=c11 -march=x86-64-v2 -flto -Wall -Wextra -o /lb lb.c
 
 FROM debian:stable-slim AS run
 RUN apt-get update && apt-get install -y --no-install-recommends \

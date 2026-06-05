@@ -12,46 +12,55 @@ services:
       context: .
       dockerfile: Dockerfile.api
     image: rinha-api-c:local
-    command: ["/app/packed.bin", "8001"]
+    command: ["/app/packed.bin", "/socks/api1.sock"]
     environment:
-      - NPROBE=${NPROBE:-6}
+      - NPROBE=6
     networks: [app]
+    volumes:
+      - sockets:/socks
     ulimits:
       memlock: -1
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.25", memory: "160M" }
 
   api2:
     build:
       context: .
       dockerfile: Dockerfile.api
     image: rinha-api-c:local
-    command: ["/app/packed.bin", "8001"]
+    command: ["/app/packed.bin", "/socks/api2.sock"]
     environment:
-      - NPROBE=${NPROBE:-6}
+      - NPROBE=6
     networks: [app]
+    volumes:
+      - sockets:/socks
     ulimits:
       memlock: -1
     depends_on: [api1]
     deploy:
       resources:
-        limits: { cpus: "0.40", memory: "160M" }
+        limits: { cpus: "0.25", memory: "160M" }
 
   lb:
     build:
       context: .
       dockerfile: Dockerfile.lbnft
     image: rinha-lb-nft:local
-    command: ["9999", "api1", "8001", "api2", "8001"]
+    command: ["9999", "/socks/api1.sock", "/socks/api2.sock"]
     ports:
       - "9999:9999"
     networks: [app]
+    volumes:
+      - sockets:/socks
     depends_on: [api1, api2]
     deploy:
       resources:
-        limits: { cpus: "0.20", memory: "24M" }
+        limits: { cpus: "0.50", memory: "24M" }
 
 networks:
   app:
     driver: bridge
+
+volumes:
+  sockets:

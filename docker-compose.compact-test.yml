@@ -1,0 +1,32 @@
+# Temporary local test for the compact packed.bin API image.
+services:
+  api1:
+    image: rinha-api-c:compact-test
+    command: ["/app/packed.bin", "8001"]
+    networks: [app]
+    deploy:
+      resources:
+        limits: { cpus: "0.45", memory: "160M" }
+
+  api2:
+    image: rinha-api-c:compact-test
+    command: ["/app/packed.bin", "8001"]
+    networks: [app]
+    deploy:
+      resources:
+        limits: { cpus: "0.45", memory: "160M" }
+
+  lb:
+    image: docker.io/srwalkerb/rinha-lb-c:v1
+    command: ["9999", "api1", "8001", "api2", "8001"]
+    ports:
+      - "9999:9999"
+    networks: [app]
+    depends_on: [api1, api2]
+    deploy:
+      resources:
+        limits: { cpus: "0.10", memory: "24M" }
+
+networks:
+  app:
+    driver: bridge
