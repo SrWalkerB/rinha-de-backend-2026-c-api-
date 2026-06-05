@@ -19,6 +19,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 
 #define MAXEV 256
@@ -160,6 +161,25 @@ int main(int argc, char **argv) {
     int ep = epoll_create1(0);
     struct epoll_event ev = { .events = EPOLLIN, .data.fd = lfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
+
+    /* Keep-warm timer (see api.c): the relay is on the request path twice, so
+     * its wakeup latency from a deep C-state is paid twice per request. A
+     * periodic timerfd bounds idle to KEEPWARM_US, keeping the core shallow.
+     * Drained and ignored; never touches the relay path. 0 disables it. */
+    int tfd = -1;
+    { const char *kw = getenv("KEEPWARM_US"); int us = kw ? atoi(kw) : 200;
+      if (us > 0) {
+          tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+          if (tfd >= 0) {
+              long ns = (long)us * 1000;
+              struct itimerspec its = { { 0, ns }, { 0, ns } };
+              timerfd_settime(tfd, 0, &its, NULL);
+              struct epoll_event te = { .events = EPOLLIN, .data.fd = tfd };
+              epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &te);
+          }
+          fprintf(stderr, "lb keepwarm=%dus\n", us);
+      } else fprintf(stderr, "lb keepwarm=off\n");
+    }
     if (argc == 4)
         fprintf(stderr, "lb listening on :%d -> %s, %s\n", port, argv[2], argv[3]);
     else
@@ -171,6 +191,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < nf; i++) {
             int fd = evs[i].data.fd;
             uint32_t e = evs[i].events;
+            if (fd == tfd) { uint64_t x; while (read(tfd, &x, sizeof(x)) > 0) {} continue; }
             if (fd == lfd) { on_accept(ep, lfd); continue; }
 
             Slot *s = &slots[fd];

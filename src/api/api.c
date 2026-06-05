@@ -23,6 +23,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
 #include <sys/un.h>
 
 #define MAXEV    256
@@ -225,6 +226,27 @@ int main(int argc, char **argv) {
     struct epoll_event ev = { .events = EPOLLIN, .data.fd = lfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, lfd, &ev);
 
+    /* Keep-warm timer: on the (idle, power-managed) test host a worker core
+     * sleeps ~2ms between requests and drops into a deep C-state, so each
+     * request pays the C-state exit (~100us) on wakeup — the CPU-quota-
+     * independent p99 floor. A periodic timerfd bounds idle to KEEPWARM_US so
+     * the core stays in a shallow C-state (exit ~us). Drained and ignored; the
+     * request/compute path is untouched (labels unchanged). 0 disables it. */
+    int tfd = -1;
+    { const char *kw = getenv("KEEPWARM_US"); int us = kw ? atoi(kw) : 200;
+      if (us > 0) {
+          tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+          if (tfd >= 0) {
+              long ns = (long)us * 1000;
+              struct itimerspec its = { { 0, ns }, { 0, ns } };
+              timerfd_settime(tfd, 0, &its, NULL);
+              struct epoll_event te = { .events = EPOLLIN, .data.fd = tfd };
+              epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &te);
+          }
+          fprintf(stderr, "keepwarm=%dus\n", us);
+      } else fprintf(stderr, "keepwarm=off\n");
+    }
+
     if (unix_listen)
         fprintf(stderr, "api ready on %s (%u refs)\n", listen_arg, g_ds.nrefs);
     else
@@ -235,6 +257,7 @@ int main(int argc, char **argv) {
         int nf = epoll_wait(ep, evs, MAXEV, -1);
         for (int i = 0; i < nf; i++) {
             int fd = evs[i].data.fd;
+            if (fd == tfd) { uint64_t x; while (read(tfd, &x, sizeof(x)) > 0) {} continue; }
             if (fd == lfd) {
                 for (;;) {
                     int cfd = accept4(lfd, NULL, NULL, SOCK_NONBLOCK);
