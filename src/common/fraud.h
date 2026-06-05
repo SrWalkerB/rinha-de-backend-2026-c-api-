@@ -36,7 +36,11 @@
 #define SCALE     10000
 #define SCALE8    127
 #define SENTINEL  (-10000)
-#define KNN_CAND  64        /* int8 first-pass candidates re-ranked exactly    */
+#ifndef KNN_CAND
+#define KNN_CAND  16        /* first-pass candidates re-ranked exactly         */
+#endif
+#define KNN_CAND_CONFIRM 16 /* confirmation pass candidate count               */
+#define KNN_CAND_MAX     64
 
 #define FRAUD_DENY_COUNT 3
 

@@ -55,7 +55,7 @@ static inline void top_insert(int64_t d, uint32_t oi, uint32_t idx,
     bd[j]=d; bo[j]=oi; bi[j]=idx;
 }
 
-typedef struct { int32_t cd[KNN_CAND]; uint32_t ci[KNN_CAND]; int filled, maxpos, cap; int32_t maxd; } Cand;
+typedef struct { int32_t cd[KNN_CAND_MAX]; uint32_t ci[KNN_CAND_MAX]; int filled, maxpos, cap; int32_t maxd; } Cand;
 static inline void cand_offer(Cand *C, int32_t d, uint32_t idx) {
     if (C->filled < C->cap) {
         C->cd[C->filled]=d; C->ci[C->filled]=idx;
@@ -123,7 +123,7 @@ static inline void heap_push_min(int64_t *pd, uint32_t *pc, int *filled, int P,
     }
 }
 
-int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe) {
+static int knn_fraud_count_cap(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe, int cand_cap) {
     uint32_t cb0 = ds->hdr->clust_bucket_off[bucket_key];
     uint32_t cb1 = ds->hdr->clust_bucket_off[bucket_key+1];
     uint32_t ncl = cb1 - cb0;
@@ -135,7 +135,9 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
     for (int k=VDIM8;k<VLANES;k++) qv[k]=0;
     for (int k=VDIM8;k<VPAD;k++)   q8[k]=0;
 
-    Cand C; C.filled=0; C.maxpos=0; C.maxd=INT32_MAX; C.cap=KNN_CAND;
+    if (cand_cap < KNN_K) cand_cap = KNN_K;
+    if (cand_cap > KNN_CAND_MAX) cand_cap = KNN_CAND_MAX;
+    Cand C; C.filled=0; C.maxpos=0; C.maxd=INT32_MAX; C.cap=cand_cap;
 
     if (nprobe <= 0 || nprobe >= (int)ncl) {
         /* probe every cluster — exact within the bucket */
@@ -217,10 +219,14 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
     return fr;
 }
 
+int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe) {
+    return knn_fraud_count_cap(ds, q16, bucket_key, nprobe, KNN_CAND);
+}
+
 int knn_fraud_count_adaptive(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe) {
-    int fr = knn_fraud_count(ds, q16, bucket_key, nprobe);
+    int fr = knn_fraud_count_cap(ds, q16, bucket_key, nprobe, KNN_CAND);
     if (nprobe > 0 && nprobe < NPROBE_CONFIRM && fr >= 1 && fr <= 4)
-        fr = knn_fraud_count(ds, q16, bucket_key, NPROBE_CONFIRM);
+        fr = knn_fraud_count_cap(ds, q16, bucket_key, NPROBE_CONFIRM, KNN_CAND_CONFIRM);
     return fr;
 }
 
