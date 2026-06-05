@@ -52,10 +52,10 @@
                                rises (~40k total) but stays the cheaper term at
                                nprobe=256. See knn.c.                            */
 #define KMEANS_ITERS   12   /* Lloyd iterations at build time                  */
-#define NPROBE_DEFAULT 24   /* first-pass clusters probed per query.
+#define NPROBE_DEFAULT 12   /* first-pass clusters probed per query.
                                Non-extreme 1..4-fraud results are confirmed with
-                               NPROBE_CONFIRM; public full-test parity stays E=0
-                               while cutting the hot KNN path versus fixed 192.  */
+                               NPROBE_CONFIRM. A narrow 5-fraud high-risk profile
+                               is also confirmed by req_confirm_extreme().       */
 #define NPROBE_CONFIRM 192
 #define NPROBE_MAX     512
 
@@ -124,6 +124,7 @@ double mcc_risk_lookup(const char *code);
 
 int  vec_build(const Request *req, int16_t q[VLANES]);
 int  vec_bucket_key(const Request *req);
+int  req_confirm_extreme(const Request *req, int bucket_key);
 
 int  ds_open(Dataset *ds, const char *path);
 void ds_close(Dataset *ds);
@@ -131,6 +132,7 @@ void ds_close(Dataset *ds);
 /* nprobe<=0 => probe every cluster in the bucket (exact within bucket). */
 int  knn_fraud_count(const Dataset *ds, const int16_t q[VLANES], int bucket_key, int nprobe);
 int  knn_fraud_count_adaptive(const Dataset *ds, const int16_t q[VLANES], int bucket_key, int nprobe);
+int  knn_fraud_count_policy(const Dataset *ds, const int16_t q[VLANES], int bucket_key, int nprobe, int confirm_extreme);
 int  knn_fraud_count_full(const Dataset *ds, const int16_t q[VLANES]);
 
 #endif /* FRAUD_H */

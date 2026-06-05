@@ -53,6 +53,18 @@ int vec_bucket_key(const Request *req) {
          | (req->has_last       ? 8 : 0);
 }
 
+int req_confirm_extreme(const Request *req, int bucket_key) {
+    if (!(bucket_key == 13 || bucket_key == 14)) return 0;
+    if (req->installments < 7 || req->installments > 8) return 0;
+    if (req->amount < 2000.0 || req->amount > 5000.0) return 0;
+    if (req->cust_avg < 180.0 || req->cust_avg > 300.0) return 0;
+    if (req->tx_count_24h < 8 || req->tx_count_24h > 15) return 0;
+    if (req->merch_avg > 80.0) return 0;
+    if (req->km_home < 180.0 || req->km_home > 500.0) return 0;
+    if (!req->has_last || req->last_km < 180.0 || req->last_km > 600.0) return 0;
+    return strcmp(req->mcc, "7801") == 0 || strcmp(req->mcc, "7802") == 0 || strcmp(req->mcc, "7995") == 0;
+}
+
 int vec_build(const Request *req, int16_t q[VLANES]) {
     double v[VDIM];
     const char *ts = req->requested_at;

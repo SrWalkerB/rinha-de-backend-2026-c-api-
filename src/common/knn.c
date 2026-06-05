@@ -224,8 +224,12 @@ int knn_fraud_count(const Dataset *ds, const int16_t q16[VLANES], int bucket_key
 }
 
 int knn_fraud_count_adaptive(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe) {
+    return knn_fraud_count_policy(ds, q16, bucket_key, nprobe, 0);
+}
+
+int knn_fraud_count_policy(const Dataset *ds, const int16_t q16[VLANES], int bucket_key, int nprobe, int confirm_extreme) {
     int fr = knn_fraud_count_cap(ds, q16, bucket_key, nprobe, KNN_CAND);
-    if (nprobe > 0 && nprobe < NPROBE_CONFIRM && fr >= 1 && fr <= 4)
+    if (nprobe > 0 && nprobe < NPROBE_CONFIRM && ((fr >= 1 && fr <= 4) || (confirm_extreme && fr == 5)))
         fr = knn_fraud_count_cap(ds, q16, bucket_key, NPROBE_CONFIRM, KNN_CAND_CONFIRM);
     return fr;
 }

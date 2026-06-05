@@ -14,7 +14,7 @@ services:
     image: rinha-api-c:local
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=${NPROBE:-24}
+      - NPROBE=${NPROBE:-12}
     networks: [app]
     ulimits:
       memlock: -1
@@ -29,7 +29,7 @@ services:
     image: rinha-api-c:local
     command: ["/app/packed.bin", "8001"]
     environment:
-      - NPROBE=${NPROBE:-24}
+      - NPROBE=${NPROBE:-12}
     networks: [app]
     ulimits:
       memlock: -1

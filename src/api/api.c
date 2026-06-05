@@ -103,7 +103,7 @@ static void handle_one(Conn *c, const char *req, const char *body) {
     if (body && req_parse(body, &r) == 0) {
         int16_t q[VLANES];
         int key = vec_build(&r, q);
-        fn = knn_fraud_count_adaptive(&g_ds, q, key, g_nprobe);
+        fn = knn_fraud_count_policy(&g_ds, q, key, g_nprobe, req_confirm_extreme(&r, key));
     }
     memcpy(c->wbuf + c->wlen, g_resp[fn], g_resp_len[fn]);
     c->wlen += g_resp_len[fn];
